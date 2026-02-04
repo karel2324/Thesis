@@ -38,4 +38,8 @@ Thumbs.db
 
 # Claude
 .claude/
+.anthropic/
+.ai/
+.cache/
+*.log
 *.md
