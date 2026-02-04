@@ -1,5 +1,40 @@
-Original/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# d3rlpy logs
 d3rlpy_logs/
-new_rl_env/
+
+# Data files (too large for git)
+*.parquet
+*.h5
+*.joblib
+*.pkl
+*.npy
+
+# Jupyter
 .ipynb_checkpoints/
-*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/

@@ -1,0 +1,1004 @@
+# =============================================================================
+# RRT Pipeline Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. PIPELINE STEPS - Which steps to run
+# -----------------------------------------------------------------------------
+steps:
+  inspection: false           # Variable inspection (raw + post-imputation)
+  imputation: false           # Clinical + MICE imputation
+  reward_calculation: false   # Terminal + intermediate rewards
+  scaling: false              # StandardScaler for continuous variables
+  mdp_preparation: false      # Create 5 MDP configurations
+  train_test_split: false     # Split MDPDatasets into train/val/test
+  ablation_study: false       # Train algorithms & compare MDPs
+  hpo: true                   # Hyperparameter optimization
+  hpo_optuna: false
+  behavior_cloning: false     # Train BC baseline model
+  evaluation: false           # Compare HPO best with BC (same database)
+  external_validation: false  # Cross-database validation
+
+# -----------------------------------------------------------------------------
+# 2. DATABASE SELECTION
+# -----------------------------------------------------------------------------
+databases:
+  aumc: true
+  mimic: true
+
+# -----------------------------------------------------------------------------
+# 3. DATASET PARAMETERS
+# -----------------------------------------------------------------------------
+dataset:
+  obs_days: 7             # 3 / 5 / 7 / 14 / 28
+  grid_step_hours: 8      # 8 / 12 /24
+  inclusion: "kdigo2"     #"kdigo2" / "kdigo3"
+
+# -----------------------------------------------------------------------------
+# 4. Reward
+# -----------------------------------------------------------------------------
+reward:
+  horizon_days: 28 # Also the mortality penalty before scaling
+  max_sofa: 24
+  structure: 'ICUFD'
+  discount: 1.0
+  mortality_penalty: 'no' # 'no' / 'zero' / 'penalty' / 'both'
+  intermediate_reward_scale: 1.0
+  intermediate_in_terminal: false
+
+# -----------------------------------------------------------------------------
+# SCALING SETTINGS
+# -----------------------------------------------------------------------------
+scaling:
+  method: standard              # standard (z-score) or minmax
+  fit_on: all                   # which split to fit scaler on: train or all
+                                # Note: transform is ALWAYS applied to entire dataset
+
+  # Output
+  output:
+    save_scaler: true           # Save fitted scaler for later use
+    save_scaled_data: true      # Save scaled dataframes
+
+
+
+# -----------------------------------------------------------------------------
+# PROCESSING SETTINGS
+# -----------------------------------------------------------------------------
+processing:
+  random_state: 42
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+  # Age columns (_age_h, _hours) default imputation
+  age_columns_impute_value: 48  # Max lookback hours
+
+
+# -----------------------------------------------------------------------------
+# MDP CONFIGURATIONS
+# -----------------------------------------------------------------------------
+mdp:
+  # Column definitions for MDP construction
+  episode_id_cols: [person_id, visit_occurrence_id]
+  time_col: hours_since_t0
+  action_col: action_rrt
+  terminal_col: is_terminal_step
+  reward_cols:
+    terminal: reward_terminal
+    combined: reward_full
+
+  configurations:
+    mdp1:
+      name: "Base + Terminal Reward"
+      state_features: "base"
+      reward: "terminal"
+
+    mdp2:
+      name: "Base + Combined Reward"
+      state_features: "base"
+      reward: "combined"
+
+    mdp3:
+      name: "Base + Missing + Terminal"
+      state_features: "base+missing"
+      reward: "terminal"
+
+    mdp4:
+      name: "Base + Time + Terminal"
+      state_features: "base+time"
+      reward: "terminal"
+
+    mdp5:
+      name: "Full + Combined"
+      state_features: "base+missing+time"
+      reward: "combined"
+
+# -----------------------------------------------------------------------------
+# ABLATION STUDY SETTINGS
+# -----------------------------------------------------------------------------
+ablation:
+  # Which databases to run ablation study on
+  databases:
+    aumc: true
+    mimic: false
+
+  # Which MDPs to train and evaluate
+  mdps_to_run:
+    - mdp1
+    - mdp2
+    - mdp3
+    - mdp4
+    - mdp5
+
+  # MDP comparison groups for ablation plots
+  # Each group creates a separate comparison plot
+  comparisons:
+    reward_ablation:
+      name: "Reward Type Ablation"
+      mdps: [mdp1, mdp2]  # Terminal vs Combined reward (same base features)
+      description: "Compare terminal-only vs combined reward"
+
+    feature_ablation:
+      name: "Feature Set Ablation"
+      mdps: [mdp1, mdp3, mdp4]  # Base vs +Missing vs +Time
+      description: "Compare feature sets with terminal reward"
+
+    full_comparison:
+      name: "Full Comparison"
+      mdps: [mdp1, mdp2, mdp3, mdp4, mdp5]
+      description: "Compare all MDP configurations"
+
+  # Evaluators to use during training
+  evaluators:
+    td_error_train: true     # TD error on training data (stability)
+    td_error_val: true       # TD error on validation (generalization)
+    isv_val: true            # Initial State Value on validation (policy quality)
+    action_match_val: true   # Agreement with clinician actions
+
+  # Primary algorithm configuration
+  algorithm:
+    name: cql  # Options: cql, bc
+    hyperparameters:
+      # CQL-specific
+      alpha: 1.0              
+      learning_rate: 0.0003   # 3e-4
+      batch_size: 256
+      gamma: 0.99
+      n_critics: 2
+      hidden_units: [256, 256]
+      # Training
+      n_steps: 3000
+      n_steps_per_epoch: 200
+
+  # Behavior Cloning baseline (always trained for comparison)
+  bc_baseline:
+    enabled: true
+    hyperparameters:
+      learning_rate: 0.0001   # 1e-4
+      batch_size: 256
+      hidden_units: [256, 256]
+      n_steps: 1000
+      beta: 0.5
+
+  # FQE (Fitted Q-Evaluation) for policy evaluation
+  fqe:
+    enabled: true
+    learning_rate: 0.0001     # 1e-4
+    n_steps: 10000
+    # Bootstrap CI (following Hao et al. 2022)
+    bootstrap:
+      enabled: false
+      n_bootstrap: 10         # Number of bootstrap samples
+      n_steps: 10000
+      confidence_level: 0.95  # CI level (0.95 = 95% CI)
+
+  # Output settings
+  output:
+    save_models: true         # Save trained .d3 model files
+    save_metrics: true        # Save training metrics CSV
+    save_plots: true          # Save comparison plots
+
+# -----------------------------------------------------------------------------
+# HYPERPARAMETER OPTIMIZATION (HPO) SETTINGS
+# -----------------------------------------------------------------------------
+hpo:
+
+  # Which databases to run HPO on
+  databases:
+    aumc: true
+    mimic: false
+
+  # Which MDP to use for HPO (typically mdp1 as baseline)
+  mdp: mdp1
+
+  # Algorithms to run HPO for (can select multiple)
+  algorithms:
+    cql: true
+    ddqn: false
+    bcq: false
+    nfq: false
+
+  # Evaluators during HPO training
+  evaluators:
+    td_error_train: true
+    td_error_val: true
+    isv_val: true            # Mean initial state value (validation)
+    action_match_val: true
+
+  # Training settings (shared across algorithms)
+  training_aumc:
+    n_steps: 16000
+    n_steps_per_epoch: 2000
+    gamma: 0.99
+    hidden_units: [256, 256]
+
+  training_mimic:
+    n_steps: 30000
+    n_steps_per_epoch: 2000
+    gamma: 0.99
+    hidden_units: [256, 256]
+
+  # Algorithm-specific hyperparameter grids
+  algorithm_grids:
+    cql:
+      alpha: [ 0.1, 0.5, 1.0, 5.0]
+      learning_rate: [0.0001, 0.0003, 0.001]
+      n_critics: [1, 2, 3]
+      batch_size: [256]       # Fixed for CQL
+
+    ddqn:
+      learning_rate: [0.0001, 0.0003, 0.001]
+      target_update_interval: [1000, 4000, 8000]
+      n_critics: [1, 2, 4]
+      batch_size: [256]       # Fixed for DDQN
+
+    bcq:
+      action_flexibility: [0.1, 0.3, 0.5]
+      learning_rate: [0.0001, 0.0003, 0.001]
+      beta: [0.3, 0.5, 0.7]
+      batch_size: [256]       # Fixed for BCQ
+
+    nfq:
+      learning_rate: [0.0001, 0.0003, 0.001]
+      batch_size: [32, 128, 256]
+      n_critics: [1, 2, 4]
+
+  # FQE evaluation for each trained model
+  fqe:
+    enabled: true
+    learning_rate: 0.0001
+    n_steps: 10000
+
+    # Bootstrap FQE for top N models per algorithm
+    bootstrap:
+      enabled: true
+      top_n_per_algorithm: 3    # Bootstrap the top N models per algorithm
+      n_bootstrap: 10           # Number of bootstrap samples
+      confidence_level: 0.95    # CI level (0.95 = 95% CI)
+      n_steps: 10000
+
+  # Optuna
+  optuna:
+    n_trials: 30
+    direction: maximize
+    log: true
+    pruner: true
+    n_steps: 
+      training: 30000
+      validation: 10000
+    search_space_ratio: 1
+
+  # Output settings
+  output:
+    save_all_models: false    # Save all trained models (can be many!)
+    save_best_models: true    # Save best model per algorithm
+    save_metrics: true        # Save all HPO metrics CSV
+    save_plots: true          # Save HPO comparison plots
+
+# -----------------------------------------------------------------------------
+# BEHAVIOR CLONING (BC) SETTINGS
+# -----------------------------------------------------------------------------
+behavior_cloning:
+
+  databases:
+    aumc: true
+    mimic: false
+
+  # Which MDPs to train BC on (can select multiple)
+  mdps:
+    - mdp1
+    #- mdp2
+    #- mdp3
+    #- mdp4
+    #- mdp5
+
+  # Which data split to train on: train, val, test, or all
+  train_split: train
+
+  # Hyperparameters
+  hyperparameters:
+    learning_rate: 0.0001     # 1e-4
+    batch_size: 256
+    hidden_units: [256, 256]
+    beta: 0.5                 # Entropy regularization weight
+    n_steps: 10000
+    n_steps_per_epoch: 2000
+
+  # Output settings
+  output:
+    save_models: true
+    save_metrics: true
+    save_plots: true
+
+# -----------------------------------------------------------------------------
+# EVALUATION SETTINGS - Compare HPO best models with BC (same database)
+# -----------------------------------------------------------------------------
+evaluation:
+  # Which MDPs to evaluate
+
+  source:
+    aumc: true
+    mimic: false
+
+  source_split:
+    full: false
+    train: true
+    val: false
+    test: false
+
+  target:
+    aumc: true
+    mimic: false
+
+  target_split:
+    full: false
+    train: false
+    val: false
+    test: true
+
+  mdps:
+    - mdp1
+    #- mdp2
+    #- mdp3
+    #- mdp4
+    #- mdp5
+
+  # Which algorithms to compare
+  algorithms:
+    cql: true
+    ddqn: true
+    bcq: false
+    nfq: false
+    bc: false
+
+  # Metrics to compute
+  metrics:
+    action_match: true        # Agreement with clinician actions
+    rrt_rate: true            # RRT initiation rate
+    fqe_isv: true             # FQE Initial State Value
+
+  # FQE settings
+  fqe:
+    enabled: true
+    learning_rate: 0.0001
+    n_steps: 1000
+
+    # Bootstrap FQE for top N models per algorithm
+    bootstrap:
+      enabled: true
+      n_bootstrap: 10           
+      confidence_level: 0.95    
+      n_steps: 10000
+
+  # Output settings
+  output:
+    save_metrics: true
+    save_plots: true
+
+# -----------------------------------------------------------------------------
+# EXTERNAL VALIDATION SETTINGS
+# -----------------------------------------------------------------------------
+# Compare best performing algorithm with BC on a different dataset
+# e.g., train on AUMCdb, validate on MIMIC (or vice versa)
+
+external_validation:
+  # Source: where the models were trained
+  source:
+    database: aumc              # aumc or mimic
+    mdp: mdp1                   # which MDP configuration
+
+  # Target: where to evaluate (external dataset)
+  target:
+    database: mimic             # aumc or mimic (must be different from source)
+    eval_splits: full             # which splits to evaluate on
+
+  # Which algorithms to compare
+  algorithms:
+    # Best RL algorithm from HPO (select one)
+    best_rl:
+      algorithm: cql            # cql, ddqn, bcq, or nfq
+      model_source: hpo         # hpo (best from HPO) or ablation
+
+    # Behavior Cloning baseline
+    bc:
+      enabled: true
+      retrain_on_target: false  # If true, also train BC on target data for comparison
+
+  # Metrics to compute
+  metrics:
+    action_match: true          # Agreement with clinician actions
+    rrt_rate: true              # RRT initiation rate comparison
+    q_values: true              # Q-value distributions
+
+  # FQE settings
+  fqe:
+    learning_rate: 0.0001
+    n_steps: 1000
+
+    # Bootstrap FQE for top N models per algorithm
+    bootstrap:
+      enabled: true
+      n_bootstrap: 10           
+      confidence_level: 0.95    
+      n_steps: 10000
+
+  # Output settings
+  output:
+    save_metrics: true
+    save_plots: true
+    save_predictions: true      # Save action predictions for analysis
+
+
+# -----------------------------------------------------------------------------
+# VARIABLES CONFIGURATION
+# -----------------------------------------------------------------------------
+# For each variable:
+#   basic_feature: include in base state features
+#   time_feature: include _age_h/_hours version in time features
+#   missing_indicator: include _missing version
+#   inspect: include in variable inspection reports
+#   impute_method: how to handle missing (clinical_value, mice, none)
+#   impute_value: value for clinical imputation (if method=clinical_value)
+#   mice_predictor: use as predictor in MICE (not imputed itself)
+#   scale: whether to apply StandardScaler (false for binary/discrete)
+
+variables:
+  # --- Demographics ---
+  age_years:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: none
+    mice_predictor: true  # No missing, use as predictor
+    scale: true
+
+  gender:
+    basic_feature: true  # Encoded as gender_male
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: false  # Binary
+
+  weight_kg_first:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  # --- Kidney Function ---
+  creat_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  creat_rel_inc_48h:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 1  # No increase
+    mice_predictor: false  # Clinical imputation done first, can be predictor
+    scale: true
+
+  urea_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  urea_rel_inc_48h:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 1  # No increase
+    mice_predictor: false  # Clinical imputation done first, can be predictor
+    scale: true
+
+  kdigo_stage:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: none
+    mice_predictor: false  # No missing, use as predictor
+    scale: false  # Discrete (0, 1, 2, 3)
+
+  # --- Urine Output ---
+  uo_6h_mlkg:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false
+    scale: true
+
+  uo_12h_mlkg:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false
+    scale: true
+
+  uo_24h_mlkg:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: true
+    scale: true
+
+  # --- Blood Gases / Acid-base ---
+  ph_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  pao2_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  fio2_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 21  # Room air
+    mice_predictor: true  # Clinical imputation done first, can be predictor
+    scale: true
+
+  bicarb_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  base_excess_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  lactate_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  # --- Electrolytes ---
+  sodium_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  potassium_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  chloride_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  calcium_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  magnesium_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  phosphate_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  anion_gap_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  # --- Hematology ---
+  hemoglobin_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  hematocrit_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  platelets_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  wbc_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  # --- Liver / Inflammation ---
+  bilirubin_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  albumin_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  crp_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  # --- Vitals ---
+  heartrate_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  map_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  temperature_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  # --- Other Labs ---
+  glucose_last:
+    basic_feature: true
+    time_feature: true
+    missing_indicator: true
+    inspect: true
+    impute_method: mice
+    mice_predictor: true  # MICE variables predict each other iteratively
+    scale: true
+
+  # --- Neurological ---
+  gcs_total_last:
+    basic_feature: true
+    time_feature: true  # gcs_total_last_hours
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 15  # Normal consciousness
+    mice_predictor: true
+    scale: false  # Discrete (3-15)
+
+  # --- Fluid Balance ---
+  fluid_balance_fblb_ml:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: none
+    mice_predictor: false
+    scale: true
+
+  fluid_in_fblb_ml:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: none
+    mice_predictor: true
+    scale: true
+
+  fluid_out_fblb_ml:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: none
+    mice_predictor: true
+    scale: true
+
+  # --- Treatment Indicators ---
+  vasopressor_in_use:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: none
+    mice_predictor: true
+    scale: false  # Binary
+
+  mechanical_ventilation_in_use:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: none
+    mice_predictor: true
+    scale: false  # Binary
+
+  # --- Time ---
+  hours_since_t0:
+    basic_feature: true
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: none
+    mice_predictor: true
+    scale: true
+
+  # --- SOFA Scores (for reward calculation, imputed to 0) ---
+  sofa_resp_24h_current:
+    basic_feature: false  # Excluded from state (used for reward)
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_coag_24h_current:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_liver_24h_current:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_neuro_24h_current:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_cardio_24h_current:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_renal_24h_current:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_total_24h_current:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: true
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-24)
+
+  sofa_resp_24h_forward:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_coag_24h_forward:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_liver_24h_forward:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_neuro_24h_forward:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_cardio_24h_forward:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_renal_24h_forward:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-4)
+
+  sofa_total_24h_forward:
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: clinical_value
+    impute_value: 0
+    mice_predictor: false  # Not used in state, not needed as predictor
+    scale: false  # Discrete (0-24)
+
