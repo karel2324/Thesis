@@ -16,7 +16,7 @@ import torch
 import d3rlpy
 
 from utils import load_config, get_data_paths, load_mdp
-from rl_training import train_bc, get_action_frequency_per_episode
+from rl_utils import train_bc, get_action_frequency_per_episode
 
 
 def main():

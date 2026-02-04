@@ -334,28 +334,15 @@ behavior_cloning:
 # EVALUATION SETTINGS - Compare HPO best models with BC (same database)
 # -----------------------------------------------------------------------------
 evaluation:
-  # Which MDPs to evaluate
-
-  source:
+  # Databases to evaluate
+  databases:
     aumc: true
     mimic: false
 
-  source_split:
-    full: false
-    train: true
-    val: false
-    test: false
+  # Splits to evaluate on (list format)
+  splits: [test]
 
-  target:
-    aumc: true
-    mimic: false
-
-  target_split:
-    full: false
-    train: false
-    val: false
-    test: true
-
+  # MDPs to evaluate
   mdps:
     - mdp1
     #- mdp2
@@ -369,25 +356,17 @@ evaluation:
     ddqn: true
     bcq: false
     nfq: false
-    bc: false
-
-  # Metrics to compute
-  metrics:
-    action_match: true        # Agreement with clinician actions
-    rrt_rate: true            # RRT initiation rate
-    fqe_isv: true             # FQE Initial State Value
+    bc: true
 
   # FQE settings
   fqe:
     enabled: true
     learning_rate: 0.0001
-    n_steps: 1000
-
-    # Bootstrap FQE for top N models per algorithm
+    n_steps: 10000
     bootstrap:
       enabled: true
-      n_bootstrap: 10           
-      confidence_level: 0.95    
+      n_bootstrap: 10
+      confidence_level: 0.95
       n_steps: 10000
 
   # Output settings
@@ -398,55 +377,49 @@ evaluation:
 # -----------------------------------------------------------------------------
 # EXTERNAL VALIDATION SETTINGS
 # -----------------------------------------------------------------------------
-# Compare best performing algorithm with BC on a different dataset
+# Compare models trained on source database, evaluated on target database
 # e.g., train on AUMCdb, validate on MIMIC (or vice versa)
 
 external_validation:
-  # Source: where the models were trained
-  source:
-    database: aumc              # aumc or mimic
-    mdp: mdp1                   # which MDP configuration
+  # Source database (where models were trained)
+  source_database: aumc         # aumc or mimic
 
-  # Target: where to evaluate (external dataset)
-  target:
-    database: mimic             # aumc or mimic (must be different from source)
-    eval_splits: full             # which splits to evaluate on
+  # Target database (where to evaluate)
+  target_database: mimic        # must be different from source
 
-  # Which algorithms to compare
+  # Splits to evaluate on
+  splits: [test]
+
+  # MDPs to evaluate
+  mdps:
+    - mdp1
+
+  # Which algorithms to compare (matching evaluation structure)
   algorithms:
-    # Best RL algorithm from HPO (select one)
-    best_rl:
-      algorithm: cql            # cql, ddqn, bcq, or nfq
-      model_source: hpo         # hpo (best from HPO) or ablation
+    cql: true
+    ddqn: false
+    bcq: false
+    nfq: false
+    bc: true
 
-    # Behavior Cloning baseline
-    bc:
-      enabled: true
-      retrain_on_target: false  # If true, also train BC on target data for comparison
+  # Model source: 'hpo' or 'ablation'
+  model_source: hpo
 
-  # Metrics to compute
-  metrics:
-    action_match: true          # Agreement with clinician actions
-    rrt_rate: true              # RRT initiation rate comparison
-    q_values: true              # Q-value distributions
-
-  # FQE settings
+  # FQE settings (same as evaluation)
   fqe:
+    enabled: true
     learning_rate: 0.0001
-    n_steps: 1000
-
-    # Bootstrap FQE for top N models per algorithm
+    n_steps: 10000
     bootstrap:
       enabled: true
-      n_bootstrap: 10           
-      confidence_level: 0.95    
+      n_bootstrap: 10
+      confidence_level: 0.95
       n_steps: 10000
 
   # Output settings
   output:
     save_metrics: true
     save_plots: true
-    save_predictions: true      # Save action predictions for analysis
 
 
 # -----------------------------------------------------------------------------

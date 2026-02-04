@@ -15,7 +15,7 @@ from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluato
 from d3rlpy.models.encoders import VectorEncoderFactory
 
 from utils import load_mdp
-from rl_training import compute_mc_return, bootstrap_fqe, train_cql, train_bc, function_fqe
+from rl_utils import compute_mc_return, bootstrap_fqe, train_cql, train_bc, function_fqe
 from rl_plotting import plot_training_curves, plot_fqe_comparison
 
 def main():

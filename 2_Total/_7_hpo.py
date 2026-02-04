@@ -14,7 +14,7 @@ from d3rlpy.ope import DiscreteFQE, FQEConfig
 from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluator, DiscreteActionMatchEvaluator
 from d3rlpy.models.encoders import VectorEncoderFactory
 from utils import load_mdp, episodes_to_mdp
-from rl_training import function_fqe, bootstrap_fqe, get_action_frequency_per_episode
+from rl_utils import function_fqe, bootstrap_fqe, get_action_frequency_per_episode
 
 def main():
     """Main entry point for HPO study."""

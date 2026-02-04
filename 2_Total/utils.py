@@ -123,6 +123,24 @@ def load_mdp(db_paths: dict, mdp_name: str, split: str = 'train'):
     path = db_paths['mdp_dir'] / f"{mdp_name}_{split}.h5"
     return ReplayBuffer.load(str(path), InfiniteBuffer())
 
+
+def load_model(model_path: Path, device: str = 'cpu'):
+    """
+    Load a trained d3rlpy model from path.
+
+    Args:
+        model_path: Path to model file (.d3)
+        device: Device to load model on ('cuda:0' or 'cpu')
+
+    Returns:
+        Loaded model or None if path doesn't exist
+    """
+    import d3rlpy
+    if model_path.exists():
+        return d3rlpy.load_learnable(str(model_path), device=device)
+    return None
+
+
 def episodes_to_mdp(episodes) -> MDPDataset:
     """Convert list of episodes back to MDPDataset."""
     obs = np.concatenate([e.observations for e in episodes])
