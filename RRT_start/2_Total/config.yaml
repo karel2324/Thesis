@@ -6,12 +6,12 @@
 # 1. PIPELINE STEPS - Which steps to run
 # -----------------------------------------------------------------------------
 steps:
-  inspection: true           # Variable inspection (raw + post-imputation)
-  imputation: true           # Clinical + MICE imputation
-  reward_calculation: true   # Terminal + intermediate rewards
-  scaling: true              # StandardScaler for continuous variables
-  mdp_preparation: true      # Create 5 MDP configurations
-  train_test_split: true     # Split MDPDatasets into train/val/test
+  inspection: false           # Variable inspection (raw + post-imputation)
+  imputation: false           # Clinical + MICE imputation
+  reward_calculation: false   # Terminal + intermediate rewards
+  scaling: false              # StandardScaler for continuous variables
+  mdp_preparation: false      # Create 5 MDP configurations
+  train_test_split: false     # Split MDPDatasets into train/val/test
   ablation_study: true       # Train algorithms & compare MDPs
   hpo: true                   # Hyperparameter optimization
   hpo_optuna: false
