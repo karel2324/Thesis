@@ -14,7 +14,7 @@ from d3rlpy.ope import DiscreteFQE, FQEConfig
 from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluator, DiscreteActionMatchEvaluator
 from d3rlpy.models.encoders import VectorEncoderFactory
 from utils import load_mdp, episodes_to_mdp
-from rl_utils import function_fqe, bootstrap_fqe, get_action_frequency_per_episode
+from rl_utils import function_fqe, bootstrap_fqe, compute_metrics_vs_behaviour_policy, compute_mc_return
 
 def main():
     """Main entry point for HPO study."""
@@ -71,11 +71,16 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ## Load data
-    mdp_name = config['hpo']['mdp'] 
+    mdp_name = config['hpo']['mdp']
     train_ds = load_mdp(db_paths, mdp_name, 'train')
     val_ds = load_mdp(db_paths, mdp_name, 'val')
     mdp_config = joblib.load(db_paths['mdp_dir'] / f"{mdp_name}_config.joblib")
     print(f"MDP: {mdp_name} ({mdp_config['n_states']} features), {len(train_ds.episodes)} train episodes")
+
+    ## Compute MC return (based on validation data - behaviour policy)
+    gamma_cfg = training_cfg['gamma']
+    mc_return_mean, mc_return_std = compute_mc_return(val_ds.episodes, gamma=gamma_cfg)
+    print(f"MC Return (val): {mc_return_mean:.4f} (±{mc_return_std:.4f})")
 
     # 3. START TRAINING
     ## Evaluators
@@ -151,23 +156,29 @@ def run_hpo_for_db(db_paths: dict, config: dict):
                 # 2. Results
                 ## Mean initial state value on validation set
                 isv_val_hpo = evaluators['isv_val'](cql_hpo, val_ds)
-                print(f" ISV={isv_val_hpo:.4f}", end='')
+                print(f" ISV_val={isv_val_hpo:.4f}", end='')
 
-                ## Action frequency
-                action_freq_hpo = get_action_frequency_per_episode(cql_hpo, val_ds)
-                print(f" Act1={action_freq_hpo:.1%}", end='')
+                ## Compute metrics vs behaviour policy
+                metrics = compute_metrics_vs_behaviour_policy(cql_hpo, val_ds)
+                print(f" rrt_rate_per_state_algo={metrics['rrt_rate_per_state_algo']:.1%}", end='')
+                print(f" rrt_rate_per_state_data={metrics['rrt_rate_per_state_data']:.1%}", end='')
 
                 ## TD-error validation
                 td_val_hpo = evaluators['td_val'](cql_hpo, val_ds)
-                print(f" TD={td_val_hpo:.4f}")
+                print(f" TD_val={td_val_hpo:.4f}")
 
                 # Append all results to results_CQL
                 results_CQL.append({
                     'model': cql_hpo,
                     'config': name,
-                    'isv_val': isv_val_hpo, 
-                    'action_freq': action_freq_hpo,
+                    'isv_val': isv_val_hpo,
                     'td_val': td_val_hpo,
+                    'mc_return_mean': mc_return_mean,
+                    'mc_return_std': mc_return_std,
+                    'rrt_rate_per_state_algo': metrics['rrt_rate_per_state_algo'],
+                    'rrt_rate_per_state_data': metrics['rrt_rate_per_state_data'],
+                    'rrt_rate_per_episode_algo': metrics['rrt_rate_per_episode_algo'],
+                    'rrt_rate_per_episode_data': metrics['rrt_rate_per_episode_data'],
                 })
             
             # Append results_CQL to all results
@@ -228,23 +239,29 @@ def run_hpo_for_db(db_paths: dict, config: dict):
                 # Results
                 ## Mean initial state value on validation set
                 isv_val_hpo = evaluators['isv_val'](ddqn_hpo, val_ds)
-                print(f" ISV={isv_val_hpo:.4f}", end='')
+                print(f" ISV_val={isv_val_hpo:.4f}", end='')
 
-                ## Action frequency
-                action_freq_hpo = get_action_frequency_per_episode(ddqn_hpo, val_ds)
-                print(f" Act1={action_freq_hpo:.1%}", end='')
+                ## Compute metrics vs behaviour policy
+                metrics = compute_metrics_vs_behaviour_policy(ddqn_hpo, val_ds)
+                print(f" rrt_rate_per_state_algo={metrics['rrt_rate_per_state_algo']:.1%}", end='')
+                print(f" rrt_rate_per_state_data={metrics['rrt_rate_per_state_data']:.1%}", end='')
 
                 ## TD-error validation
                 td_val_hpo = evaluators['td_val'](ddqn_hpo, val_ds)
-                print(f" TD={td_val_hpo:.4f}")
+                print(f" TD_val={td_val_hpo:.4f}")
 
                 # Append all results
                 results_DDQN.append({
                     'model': ddqn_hpo,
                     'config': name,
-                    'isv_val': isv_val_hpo, 
-                    'action_freq': action_freq_hpo,
+                    'isv_val': isv_val_hpo,
                     'td_val': td_val_hpo,
+                    'mc_return_mean': mc_return_mean,
+                    'mc_return_std': mc_return_std,
+                    'rrt_rate_per_state_algo': metrics['rrt_rate_per_state_algo'],
+                    'rrt_rate_per_state_data': metrics['rrt_rate_per_state_data'],
+                    'rrt_rate_per_episode_algo': metrics['rrt_rate_per_episode_algo'],
+                    'rrt_rate_per_episode_data': metrics['rrt_rate_per_episode_data'],
                 })
             
             # Append results_DDQN to all results
@@ -304,23 +321,29 @@ def run_hpo_for_db(db_paths: dict, config: dict):
                 # Results
                 ## Mean initial state value on validation set
                 isv_val_hpo = evaluators['isv_val'](bcq_hpo, val_ds)
-                print(f" ISV={isv_val_hpo:.4f}", end='')
+                print(f" ISV_val={isv_val_hpo:.4f}", end='')
 
-                ## Action frequency
-                action_freq_hpo = get_action_frequency_per_episode(bcq_hpo, val_ds)
-                print(f" Act1={action_freq_hpo:.1%}", end='')
+                ## Compute metrics vs behaviour policy
+                metrics = compute_metrics_vs_behaviour_policy(bcq_hpo, val_ds)
+                print(f" rrt_rate_per_state_algo={metrics['rrt_rate_per_state_algo']:.1%}", end='')
+                print(f" rrt_rate_per_state_data={metrics['rrt_rate_per_state_data']:.1%}", end='')
 
                 ## TD-error validation
                 td_val_hpo = evaluators['td_val'](bcq_hpo, val_ds)
-                print(f" TD={td_val_hpo:.4f}")
+                print(f" TD_val={td_val_hpo:.4f}")
 
                 # Append all results
                 results_BCQ.append({
                     'model': bcq_hpo,
                     'config': name,
-                    'isv_val': isv_val_hpo, 
-                    'action_freq': action_freq_hpo,
+                    'isv_val': isv_val_hpo,
                     'td_val': td_val_hpo,
+                    'mc_return_mean': mc_return_mean,
+                    'mc_return_std': mc_return_std,
+                    'rrt_rate_per_state_algo': metrics['rrt_rate_per_state_algo'],
+                    'rrt_rate_per_state_data': metrics['rrt_rate_per_state_data'],
+                    'rrt_rate_per_episode_algo': metrics['rrt_rate_per_episode_algo'],
+                    'rrt_rate_per_episode_data': metrics['rrt_rate_per_episode_data'],
                 })
 
             # Append results_BCQ to all results
@@ -379,24 +402,29 @@ def run_hpo_for_db(db_paths: dict, config: dict):
                 # Results
                 ## Mean initial state value on validation set
                 isv_val_hpo = evaluators['isv_val'](nfq_hpo, val_ds)
-                print(f" ISV={isv_val_hpo:.4f}", end='')
+                print(f" ISV_val={isv_val_hpo:.4f}", end='')
 
-                ## Action frequency
-                action_freq_hpo = get_action_frequency_per_episode(nfq_hpo, val_ds)
-                print(f" Act1={action_freq_hpo:.1%}", end='')
+                ## Compute metrics vs behaviour policy
+                metrics = compute_metrics_vs_behaviour_policy(nfq_hpo, val_ds)
+                print(f" rrt_rate_per_state_algo={metrics['rrt_rate_per_state_algo']:.1%}", end='')
+                print(f" rrt_rate_per_state_data={metrics['rrt_rate_per_state_data']:.1%}", end='')
 
                 ## TD-error validation
                 td_val_hpo = evaluators['td_val'](nfq_hpo, val_ds)
-                print(f" TD={td_val_hpo:.4f}")
-
+                print(f" TD_val={td_val_hpo:.4f}")
 
                 # Append all results
                 results_NFQ.append({
                     'model': nfq_hpo,
                     'config': name,
-                    'isv_val': isv_val_hpo, 
-                    'action_freq': action_freq_hpo,
+                    'isv_val': isv_val_hpo,
                     'td_val': td_val_hpo,
+                    'mc_return_mean': mc_return_mean,
+                    'mc_return_std': mc_return_std,
+                    'rrt_rate_per_state_algo': metrics['rrt_rate_per_state_algo'],
+                    'rrt_rate_per_state_data': metrics['rrt_rate_per_state_data'],
+                    'rrt_rate_per_episode_algo': metrics['rrt_rate_per_episode_algo'],
+                    'rrt_rate_per_episode_data': metrics['rrt_rate_per_episode_data'],
                 })
             
             # Append results_NFQ to all results
@@ -517,15 +545,20 @@ def compare_performance_algorithms(all_results: dict, val_ds, config: dict, devi
 
     # 3. Summary (always create, CI columns will be NaN if bootstrap disabled)
     summary_df = pd.DataFrame([{
-        'rank': i+1, 
-        'algorithm': r['algorithm'], 
+        'rank': i+1,
+        'algorithm': r['algorithm'],
         'config': r['config'],
-        'fqe_isv': r['fqe_isv'], 
-        'ci_low': r.get('ci_low', np.nan), 
-        'ci_high': r.get('ci_high', np.nan),
-        'isv_val': r['isv_val'], 
-        'td_val': r['td_val'], 
-        'action_freq': r['action_freq'],
+        'fqe_isv': r['fqe_isv'],
+        'fqe_isv_ci_low': r.get('ci_low', np.nan),
+        'fqe_isv_ci_high': r.get('ci_high', np.nan),
+        'isv_val': r['isv_val'],
+        'td_val': r['td_val'],
+        'mc_return_mean': r['mc_return_mean'],
+        'mc_return_std': r['mc_return_std'],
+        'rrt_rate_per_state_algo': r['rrt_rate_per_state_algo'],
+        'rrt_rate_per_state_data': r['rrt_rate_per_state_data'],
+        'rrt_rate_per_episode_algo': r['rrt_rate_per_episode_algo'],
+        'rrt_rate_per_episode_data': r['rrt_rate_per_episode_data'],
     } for i, r in enumerate(all_fqe)])
 
     print(f"\n--- TOP 10 ---\n{summary_df.head(10).to_string(index=False)}")

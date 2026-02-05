@@ -87,6 +87,8 @@ def bootstrap_fqe(algo, dataset, fqe_config, n_bootstrap, n_steps, device, seed,
 
     Returns:
         Tuple of (mean_value, ci_lower, ci_upper)
+        Bootstrap is for uncertainty of model. So states are bootstrapped for FQE,
+        but bootstrapped mean ISV is of the bootstrapped FQE-function on the original states. 
     """
     episodes = dataset.episodes
     boot_vals = []
@@ -104,13 +106,12 @@ def bootstrap_fqe(algo, dataset, fqe_config, n_bootstrap, n_steps, device, seed,
             bootstrap_dataset,
             n_steps=n_steps,
             n_steps_per_epoch=n_steps,
-            show_progress=True,
-            evaluators={'isv': InitialStateValueEstimationEvaluator(bootstrap_dataset.episodes)}
-        )
+            show_progress=True
+                )
 
         # Evaluate
-        isv_evaluator = InitialStateValueEstimationEvaluator(bootstrap_dataset.episodes)
-        boot_vals.append(isv_evaluator(fqe, bootstrap_dataset))
+        isv_evaluator = InitialStateValueEstimationEvaluator(episodes)
+        boot_vals.append(isv_evaluator(fqe, dataset))
 
     # Calculate confidence interval
     alpha = 1 - CI
