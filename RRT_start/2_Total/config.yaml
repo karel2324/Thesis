@@ -6,8 +6,8 @@
 # 1. PIPELINE STEPS - Which steps to run
 # -----------------------------------------------------------------------------
 steps:
-  inspection: false           # Variable inspection (raw + post-imputation)
-  imputation: false           # Clinical + MICE imputation
+  inspection: true           # Variable inspection (raw + post-imputation)
+  imputation: true           # Clinical + MICE imputation
   reward_calculation: true   # Terminal + intermediate rewards
   scaling: true              # StandardScaler for continuous variables
   mdp_preparation: true      # Create 5 MDP configurations
@@ -15,9 +15,9 @@ steps:
   ablation_study: true       # Train algorithms & compare MDPs
   hpo: true                   # Hyperparameter optimization
   hpo_optuna: false
-  behavior_cloning: false     # Train BC baseline model
-  evaluation: false           # Compare HPO best with BC (same database)
-  external_validation: false  # Cross-database validation
+  behavior_cloning: true     # Train BC baseline model
+  evaluation: true           # Compare HPO best with BC (same database)
+  external_validation: true  # Cross-database validation
 
 # -----------------------------------------------------------------------------
 # 2. DATABASE SELECTION
@@ -42,7 +42,7 @@ reward:
   max_sofa: 24
   structure: 'ICUFD'
   discount: 1.0
-  mortality_penalty: 'penalty' # 'no' / 'zero' / 'penalty' / 'both'
+  mortality_penalty: 'zero' # 'no' / 'zero' / 'penalty' / 'both'
   intermediate_reward_scale: 1.0
   intermediate_in_terminal: false
 
@@ -214,7 +214,7 @@ hpo:
   # Algorithms to run HPO for (can select multiple)
   algorithms:
     cql: true
-    ddqn: false
+    ddqn: true
     bcq: false
     nfq: false
 
@@ -227,7 +227,7 @@ hpo:
 
   # Training settings (shared across algorithms)
   training_aumc:
-    n_steps: 16000
+    n_steps: 30000
     n_steps_per_epoch: 2000
     gamma: 0.99
     hidden_units: [256, 256]
@@ -271,7 +271,7 @@ hpo:
 
     # Bootstrap FQE for top N models per algorithm
     bootstrap:
-      enabled: false
+      enabled: true
       top_n_per_algorithm: 3    # Bootstrap the top N models per algorithm
       n_bootstrap: 10           # Number of bootstrap samples
       confidence_level: 0.95    # CI level (0.95 = 95% CI)
@@ -312,8 +312,12 @@ behavior_cloning:
     #- mdp4
     #- mdp5
 
-  # Which data split to train on: train, val, test, or all
-  train_split: train
+  # Which data split to train on: train, val, test, or full
+  train_split: 
+    - train
+    #- val
+    #- test
+    #- full
 
   # Hyperparameters
   hyperparameters:
@@ -358,6 +362,9 @@ evaluation:
     nfq: false
     bc: true
 
+  bc:
+    train_split: train
+
   # FQE settings
   fqe:
     enabled: true
@@ -388,7 +395,8 @@ external_validation:
   target_database: mimic        # must be different from source
 
   # Splits to evaluate on
-  splits: [test]
+  splits:
+    - full
 
   # MDPs to evaluate
   mdps:
@@ -401,6 +409,9 @@ external_validation:
     bcq: false
     nfq: false
     bc: true
+
+  bc: 
+    train_split: full
 
   # Model source: 'hpo' or 'ablation'
   model_source: hpo
@@ -590,14 +601,14 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
 
-  lactate_last:
-    basic_feature: true
-    time_feature: true
-    missing_indicator: true
-    inspect: true
-    impute_method: mice
-    mice_predictor: true  # MICE variables predict each other iteratively
-    scale: true
+  lactate_last: # Too much missing
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: None
+    mice_predictor: false  # MICE variables predict each other iteratively
+    scale: false
 
   # --- Electrolytes ---
   sodium_last:
@@ -627,14 +638,14 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
 
-  calcium_last:
-    basic_feature: true
-    time_feature: true
-    missing_indicator: true
-    inspect: true
+  calcium_last: # Too much missing 
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
     impute_method: mice
-    mice_predictor: true  # MICE variables predict each other iteratively
-    scale: true
+    mice_predictor: false  # MICE variables predict each other iteratively
+    scale: false
 
   magnesium_last:
     basic_feature: true
@@ -701,32 +712,32 @@ variables:
     scale: true
 
   # --- Liver / Inflammation ---
-  bilirubin_last:
-    basic_feature: true
-    time_feature: true
-    missing_indicator: true
-    inspect: true
-    impute_method: mice
-    mice_predictor: true  # MICE variables predict each other iteratively
-    scale: true
+  bilirubin_last: # Too much missing
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: None
+    mice_predictor: false  # MICE variables predict each other iteratively
+    scale: false
 
-  albumin_last:
-    basic_feature: true
-    time_feature: true
-    missing_indicator: true
-    inspect: true
-    impute_method: mice
-    mice_predictor: true  # MICE variables predict each other iteratively
-    scale: true
+  albumin_last: # Too much missing
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: None
+    mice_predictor: false  # MICE variables predict each other iteratively
+    scale: false
 
-  crp_last:
-    basic_feature: true
-    time_feature: true
-    missing_indicator: true
-    inspect: true
-    impute_method: mice
-    mice_predictor: true  # MICE variables predict each other iteratively
-    scale: true
+  crp_last: # Too much missing
+    basic_feature: false
+    time_feature: false
+    missing_indicator: false
+    inspect: false
+    impute_method: None
+    mice_predictor: false  # MICE variables predict each other iteratively
+    scale: false
 
   # --- Vitals ---
   heartrate_last:

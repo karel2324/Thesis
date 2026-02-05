@@ -15,6 +15,7 @@ from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluato
 from d3rlpy.models.encoders import VectorEncoderFactory
 from utils import load_mdp, episodes_to_mdp
 from rl_utils import function_fqe, bootstrap_fqe, compute_metrics_vs_behaviour_policy, compute_mc_return
+from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
 def main():
     """Main entry point for HPO study."""
@@ -50,9 +51,13 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     db_name = db_paths['name']
     db_key = 'aumc' if 'aumc' in db_name.lower() else 'mimic'
 
+    ## Generate run metadata for traceability
+    metadata = get_run_metadata(config, db_name)
+    print_run_header(metadata, title="HPO RUN")
+
     ## Standard configuration
     training_cfg=config['hpo'][f'training_{db_key}']
-    
+
     ## Training settings (different per dataset)
     gamma_cfg = training_cfg['gamma']
     hidden_units_cfg = training_cfg['hidden_units']
@@ -63,7 +68,10 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     seed = config['processing']['random_state']
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
-    print(f"\n{'='*60}\nHPO: {db_paths['name']}\n{'='*60}")
+    print(f"\nTRAINING CONFIG:")
+    print(f"  n_steps: {n_steps_cfg} | n_steps_per_epoch: {n_per_epoch_cfg}")
+    print(f"  gamma: {gamma_cfg} | hidden_units: {hidden_units_cfg}")
+    print("=" * 80)
 
     # 2. INPUT & OUTPUT
     ## Output
@@ -435,16 +443,33 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     else:
         print("Skipping NFQ: disabled in hpo.algorithms")
 
-    # SAVE RESULTS AND ALGORTIHMS 
+    # SAVE RESULTS AND ALGORTIHMS
     print(f"\n--- Saving results to {output_dir} ---")
-    
+
+    # Store training config for traceability
+    training_config = {
+        'n_steps': n_steps_cfg,
+        'n_steps_per_epoch': n_per_epoch_cfg,
+        'gamma': gamma_cfg,
+        'hidden_units': hidden_units_cfg,
+    }
+
     for algo_name, results in all_results.items():
         # 1. Save models
         for r in results:
             r['model'].save(str(output_dir / f"{algo_name}_{r['config']}.d3"))
-        
-        # 2. Save training results CSV (zonder model object)
+
+        # 2. Save training results CSV with metadata
         df = pd.DataFrame([{k: v for k, v in r.items() if k != 'model'} for r in results])
+
+        # Add training config columns
+        df['n_steps_train'] = n_steps_cfg
+        df['gamma'] = gamma_cfg
+        df['hidden_units'] = str(hidden_units_cfg)
+
+        # Add metadata columns
+        df = add_metadata_to_df(df, metadata)
+
         df.to_csv(output_dir / f"{algo_name}_results.csv", index=False)
         print(f"  {algo_name}: {len(results)} models saved")
 
@@ -458,15 +483,38 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     # Use compare_performance_algorithm
     all_fqe, summary_df = compare_performance_algorithms(all_results, val_ds, config, device, seed, db_key)
 
-    # Save best performing algorithms performance
+    # Add metadata to FQE results
+    summary_df = add_metadata_to_df(summary_df, metadata)
     summary_df.to_csv(output_dir / "fqe_comparison.csv", index=False)
 
-    # Save all_fqe details (without model objects)
+    # Save all_fqe details (without model objects) with metadata
     all_fqe_df = pd.DataFrame([{k: v for k, v in r.items() if k != 'model'} for r in all_fqe])
+    all_fqe_df = add_metadata_to_df(all_fqe_df, metadata)
     all_fqe_df.to_csv(output_dir / "all_fqe_results.csv", index=False)
+
+    # Save best model per algorithm (highest FQE ISV)
+    print("\n--- Saving best models ---")
+    for algo_name in all_results.keys():
+        # Filter FQE results for this algorithm
+        algo_fqe = [r for r in all_fqe if r['algorithm'] == algo_name]
+        if algo_fqe:
+            # Find best by FQE ISV
+            best = max(algo_fqe, key=lambda x: x['fqe_isv'])
+            best_model = best['model']
+            best_model.save(str(output_dir / f"best_{algo_name}_model.d3"))
+            print(f"  {algo_name}: saved best model (FQE ISV={best['fqe_isv']:.4f}, config={best['config']})")
+
+    # Save run configuration JSON for full traceability
+    fqe_config = {
+        'fqe_n_steps': config['hpo']['fqe']['n_steps'],
+        'fqe_learning_rate': config['hpo']['fqe']['learning_rate'],
+    }
+    save_run_config(output_dir, metadata, training_config=training_config, eval_config=fqe_config)
 
     # End of function
     print(f"FQE results saved to {output_dir / 'fqe_comparison.csv'} and {output_dir / 'all_fqe_results.csv'}")
+    run_id = metadata['run_id']
+    print(f"Run config saved to {output_dir / f'run_{run_id}_config.json'}")
 
     return all_results, all_fqe_df, summary_df
 

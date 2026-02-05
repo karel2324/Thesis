@@ -17,6 +17,7 @@ import d3rlpy
 
 from utils import load_config, get_data_paths, load_mdp
 from rl_utils import train_bc, get_action_frequency_per_episode
+from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
 
 def main():
@@ -60,36 +61,42 @@ def run_bc_for_db(db_paths: dict, config: dict):
         print(f"Skipping {db_name}: disabled in behavior_cloning.database config")
         return
 
-    print(f"\n{'='*60}")
-    print(f"BEHAVIOR CLONING: {db_name}")
-    print(f"{'='*60}")
+    # Generate run metadata for traceability
+    metadata = get_run_metadata(config, db_name)
+    print_run_header(metadata, title="BEHAVIOR CLONING")
+
+    # Print BC config
+    hp = bc_cfg.get('hyperparameters', {})
+    print(f"\nBC CONFIG:")
+    print(f"  n_steps: {hp.get('n_steps')} | batch_size: {hp.get('batch_size')}")
+    print(f"  learning_rate: {hp.get('learning_rate')} | beta: {hp.get('beta')}")
+    print("=" * 80)
 
     # 2. INPUT & OUTPUT
     mdp_dir = db_paths['mdp_dir']
     output_dir = db_paths['reward_dir'] / "BC_results"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    seed = config.get('processing', {}).get('random_state', 42)
+    seed = 42
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-    print(f"Device: {device}")
 
     # 3. GET SETTINGS FROM CONFIG
-    mdps_to_train = bc_cfg.get('mdps', ['mdp1'])
-    train_split = bc_cfg.get('train_split', 'train')
+    mdp_name = bc_cfg.get('mdps', ['mdp1'])[0]  # Single MDP
+    train_splits = bc_cfg.get('train_split', ['train'])  # List of splits
     hp = bc_cfg.get('hyperparameters', {})
     output_cfg = bc_cfg.get('output', {})
 
     ## Hyperparameters
-    learning_rate = hp.get('learning_rate', 1e-4)
-    batch_size = hp.get('batch_size', 256)
-    hidden_units = hp.get('hidden_units', [256, 256])
-    beta = hp.get('beta', 0.5)
-    n_steps = hp.get('n_steps', 10000)
-    n_steps_per_epoch = hp.get('n_steps_per_epoch', 2000)
+    learning_rate = hp.get('learning_rate')
+    batch_size = hp.get('batch_size')
+    hidden_units = hp.get('hidden_units')
+    beta = hp.get('beta')
+    n_steps = hp.get('n_steps')
+    n_steps_per_epoch = hp.get('n_steps_per_epoch')
 
     print(f"\nSettings:")
-    print(f"  MDPs: {mdps_to_train}")
-    print(f"  Train split: {train_split}")
+    print(f"  MDP: {mdp_name}")
+    print(f"  Train splits: {train_splits}")
     print(f"\nHyperparameters:")
     print(f"  learning_rate: {learning_rate}")
     print(f"  batch_size: {batch_size}")
@@ -98,26 +105,28 @@ def run_bc_for_db(db_paths: dict, config: dict):
     print(f"  n_steps: {n_steps}")
 
     ############################################################################################################
-    # 4. TRAIN BC FOR EACH MDP
+    # 4. TRAIN BC FOR EACH SPLIT
 
     results = []
     models = {}
 
-    for mdp_name in mdps_to_train:
+    # Load MDP config once (same for all splits)
+    mdp_config = joblib.load(mdp_dir / f"{mdp_name}_config.joblib")
+
+    for split in train_splits:
         print(f"\n{'='*50}")
-        print(f"Training BC on {mdp_name.upper()} ({train_split})")
+        print(f"Training BC on {mdp_name.upper()} ({split})")
         print(f"{'='*50}")
 
         # Check if data exists
-        train_path = mdp_dir / f"{mdp_name}_{train_split}.h5"
+        train_path = mdp_dir / f"{mdp_name}_{split}.h5"
         if not train_path.exists():
-            print(f"  Skipping {mdp_name}: data not found at {train_path}")
+            print(f"  Skipping {split}: data not found at {train_path}")
             continue
 
         # Load data
-        train_ds = load_mdp(db_paths, mdp_name, train_split)
+        train_ds = load_mdp(db_paths, mdp_name, split)
         val_ds = load_mdp(db_paths, mdp_name, 'val') if (mdp_dir / f"{mdp_name}_val.h5").exists() else train_ds
-        mdp_config = joblib.load(mdp_dir / f"{mdp_name}_config.joblib")
 
         print(f"  Training data: {len(train_ds.episodes)} episodes")
         print(f"  Features: {mdp_config['n_states']}")
@@ -125,7 +134,7 @@ def run_bc_for_db(db_paths: dict, config: dict):
         d3rlpy.seed(seed)
 
         # Train BC using rl_training.train_bc
-        bc, metrics_df = train_bc(
+        bc, metrics_df, _ = train_bc(
             train_ds=train_ds,
             val_ds=val_ds,
             learning_rate=learning_rate,
@@ -163,7 +172,7 @@ def run_bc_for_db(db_paths: dict, config: dict):
         # Store results
         result = {
             'mdp': mdp_name,
-            'train_split': train_split,
+            'train_split': split,
             'n_features': mdp_config['n_states'],
             'loss': final.get('loss', np.nan),
             'action_match': action_match,
@@ -173,12 +182,12 @@ def run_bc_for_db(db_paths: dict, config: dict):
         }
 
         results.append(result)
-        models[mdp_name] = bc
+        models[split] = bc
 
         # Save model
         if output_cfg.get('save_models', True):
-            bc.save(str(output_dir / f"bc_{mdp_name}_model.d3"))
-            print(f"  Saved: bc_{mdp_name}_model.d3")
+            bc.save(str(output_dir / f"bc_{mdp_name}_{split}.d3"))
+            print(f"  Saved: bc_{mdp_name}_{split}.d3")
 
     ############################################################################################################
     # 5. CREATE SUMMARY
@@ -187,6 +196,8 @@ def run_bc_for_db(db_paths: dict, config: dict):
         results_df = pd.DataFrame(results)
 
         if output_cfg.get('save_metrics', True):
+            # Add metadata columns
+            results_df = add_metadata_to_df(results_df, metadata)
             results_df.to_csv(output_dir / "bc_results.csv", index=False)
 
         print(f"\n{'='*60}")
@@ -197,8 +208,17 @@ def run_bc_for_db(db_paths: dict, config: dict):
         if output_cfg.get('save_plots', True) and len(results) > 1:
             create_bc_plots(results_df, output_dir)
 
+    # Save run configuration JSON
+    training_config = {
+        'algorithm': 'bc',
+        **bc_cfg.get('hyperparameters', {})
+    }
+    save_run_config(output_dir, metadata, training_config=training_config)
+
+    run_id = metadata['run_id']
     print(f"\n{'='*60}")
     print(f"BC complete! Results saved to: {output_dir}")
+    print(f"Run config saved to: run_{run_id}_config.json")
     print(f"{'='*60}")
 
 
@@ -209,15 +229,15 @@ def create_bc_plots(results_df: pd.DataFrame, output_dir: Path):
     """Create BC comparison plots."""
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    mdps = results_df['mdp'].tolist()
-    x = np.arange(len(mdps))
+    splits = results_df['train_split'].tolist()
+    x = np.arange(len(splits))
 
     # Plot 1: Action Match
     ax1 = axes[0]
     values = results_df['action_match'].values * 100
     ax1.bar(x, values, color='steelblue', alpha=0.8)
     ax1.set_xticks(x)
-    ax1.set_xticklabels([m.upper() for m in mdps])
+    ax1.set_xticklabels([s.upper() for s in splits])
     ax1.set_ylabel('Action Match (%)')
     ax1.set_title('BC Action Match with Clinicians')
     ax1.set_ylim(0, 105)
@@ -233,7 +253,7 @@ def create_bc_plots(results_df: pd.DataFrame, output_dir: Path):
     ax2.bar(x - width/2, bc_rates, width, label='BC Policy', color='steelblue', alpha=0.8)
     ax2.bar(x + width/2, data_rates, width, label='Clinician', color='darkorange', alpha=0.8)
     ax2.set_xticks(x)
-    ax2.set_xticklabels([m.upper() for m in mdps])
+    ax2.set_xticklabels([s.upper() for s in splits])
     ax2.set_ylabel('RRT Rate (%)')
     ax2.set_title('RRT Initiation Rate: BC vs Clinicians')
     ax2.legend()

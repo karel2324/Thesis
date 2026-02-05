@@ -17,6 +17,7 @@ from d3rlpy.models.encoders import VectorEncoderFactory
 from utils import load_mdp
 from rl_utils import compute_mc_return, bootstrap_fqe, train_cql, train_bc, function_fqe
 from rl_plotting import plot_training_curves, plot_fqe_comparison
+from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
 def main():
     """Main entry point for ablation study."""
@@ -58,8 +59,16 @@ def run_ablation_for_db(db_paths: dict, config: dict):
     seed = config['processing']['random_state']
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
-    print(f"\n{'='*60}\nABLATION STUDY: {db_name}\n{'='*60}")
-    print(f"Device: {device}")
+    # Generate run metadata for traceability
+    metadata = get_run_metadata(config, db_name)
+    print_run_header(metadata, title="ABLATION STUDY")
+
+    # Print training config
+    algo_cfg = ablation_cfg['algorithm']['hyperparameters']
+    print(f"\nTRAINING CONFIG (CQL):")
+    print(f"  n_steps: {algo_cfg['n_steps']} | batch_size: {algo_cfg['batch_size']}")
+    print(f"  alpha: {algo_cfg['alpha']} | lr: {algo_cfg['learning_rate']} | gamma: {algo_cfg['gamma']}")
+    print("=" * 80)
 
     # =========================================================================
     # 1. LOAD DATASETS
@@ -104,24 +113,26 @@ def run_ablation_for_db(db_paths: dict, config: dict):
 
         print(f"\n{name_mdp.upper()}:")
 
-        cql, metrics = train_cql(
-                train_ds = datasets['train'], 
-                val_ds = datasets['val'], 
-                alpha = config['ablation']['algorithm']['hyperparameters']['alpha'], 
-                learning_rate = config['ablation']['algorithm']['hyperparameters']['learning_rate'], 
-                batch_size  = config['ablation']['algorithm']['hyperparameters']['batch_size'], 
-                gamma  = config['ablation']['algorithm']['hyperparameters']['gamma'], 
-                n_critics  = config['ablation']['algorithm']['hyperparameters']['n_critics'], 
-                hidden_units  = config['ablation']['algorithm']['hyperparameters']['hidden_units'], 
-                n_steps  = config['ablation']['algorithm']['hyperparameters']['n_steps'], 
-                n_steps_per_epoch  = config['ablation']['algorithm']['hyperparameters']['n_steps_per_epoch'], 
+        cql, metrics, _ = train_cql(
+                train_ds = datasets['train'],
+                val_ds = datasets['val'],
+                alpha = config['ablation']['algorithm']['hyperparameters']['alpha'],
+                learning_rate = config['ablation']['algorithm']['hyperparameters']['learning_rate'],
+                batch_size  = config['ablation']['algorithm']['hyperparameters']['batch_size'],
+                gamma  = config['ablation']['algorithm']['hyperparameters']['gamma'],
+                n_critics  = config['ablation']['algorithm']['hyperparameters']['n_critics'],
+                hidden_units  = config['ablation']['algorithm']['hyperparameters']['hidden_units'],
+                n_steps  = config['ablation']['algorithm']['hyperparameters']['n_steps'],
+                n_steps_per_epoch  = config['ablation']['algorithm']['hyperparameters']['n_steps_per_epoch'],
                 device = device,
                 save_interval  = 10, # At which epochs to save the algorithm
                 name = name_mdp)
 
         CQL_MODELS[name_mdp] = cql
         RESULTS[name_mdp] = {'metrics': metrics}
-        metrics.to_csv(output_dir / f"{name_mdp}_metrics.csv", index=False)
+        # Add metadata to metrics CSV
+        metrics_with_meta = add_metadata_to_df(metrics.copy(), metadata)
+        metrics_with_meta.to_csv(output_dir / f"{name_mdp}_metrics.csv", index=False)
         cql.save(str(output_dir / f"{name_mdp}_cql.d3"))
 
     # =========================================================================
@@ -140,15 +151,15 @@ def run_ablation_for_db(db_paths: dict, config: dict):
 
             print(f"\n{name.upper()}:")
 
-            bc, metrics =    train_bc(train_ds = datasets['train'],
+            bc, metrics, _ = train_bc(train_ds = datasets['train'],
                                        val_ds = datasets['val'],
-                                       learning_rate = config['ablation']['bc_baseline']['hyperparameters']['learning_rate'], 
-                                       batch_size = config['ablation']['bc_baseline']['hyperparameters']['batch_size'], 
-                                       beta = config['ablation']['bc_baseline']['hyperparameters']['beta'], 
-                                       hidden_units = config['ablation']['bc_baseline']['hyperparameters']['hidden_units'], 
-                                       n_steps = config['ablation']['bc_baseline']['hyperparameters']['n_steps'], 
-                                       n_steps_per_epoch = config['ablation']['bc_baseline']['hyperparameters']['n_steps'], 
-                                       device = device , 
+                                       learning_rate = config['ablation']['bc_baseline']['hyperparameters']['learning_rate'],
+                                       batch_size = config['ablation']['bc_baseline']['hyperparameters']['batch_size'],
+                                       beta = config['ablation']['bc_baseline']['hyperparameters']['beta'],
+                                       hidden_units = config['ablation']['bc_baseline']['hyperparameters']['hidden_units'],
+                                       n_steps = config['ablation']['bc_baseline']['hyperparameters']['n_steps'],
+                                       n_steps_per_epoch = config['ablation']['bc_baseline']['hyperparameters']['n_steps'],
+                                       device = device,
                                        name = name)
 
             BC_MODELS[name] = bc
@@ -271,8 +282,25 @@ def run_ablation_for_db(db_paths: dict, config: dict):
 
     summary_df = pd.DataFrame(summary)
     print(f"\n{summary_df.to_string(index=False)}")
+
+    # Add metadata and save
+    summary_df = add_metadata_to_df(summary_df, metadata)
     summary_df.to_csv(output_dir / "summary.csv", index=False)
+
+    # Save run configuration JSON
+    training_config = {
+        'algorithm': 'cql',
+        **config['ablation']['algorithm']['hyperparameters']
+    }
+    fqe_config = {
+        'fqe_n_steps': config['ablation']['fqe']['n_steps'] if config['ablation']['fqe']['enabled'] else None,
+        'fqe_learning_rate': config['ablation']['fqe']['learning_rate'] if config['ablation']['fqe']['enabled'] else None,
+    }
+    save_run_config(output_dir, metadata, training_config=training_config, eval_config=fqe_config)
+
+    run_id = metadata['run_id']
     print(f"\nResults saved to: {output_dir}")
+    print(f"Run config saved to: run_{run_id}_config.json")
 
 if __name__ == "__main__":
     main()

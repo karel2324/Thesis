@@ -11,6 +11,7 @@ import torch
 from utils import load_config, get_data_paths, load_mdp, load_model
 from rl_utils import evaluate_algo, compute_mc_return, compute_metrics_algo_vs_algo
 from rl_plotting import plot_evaluation_vs_behaviour_policy, plot_evaluation_algo_vs_bc
+from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
 
 def main():
@@ -36,7 +37,16 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
     """
     db_name = db_paths['name']
 
-    print(f"\n{'='*60}\nEVALUATION: {db_name}\n{'='*60}")
+    # Generate run metadata for traceability
+    metadata = get_run_metadata(config, db_name)
+    print_run_header(metadata, title="EVALUATION")
+
+    # Print evaluation config
+    eval_cfg = config['evaluation']
+    print(f"\nEVALUATION CONFIG:")
+    print(f"  splits: {eval_cfg['splits']} | MDPs: {eval_cfg['mdps']}")
+    print(f"  FQE: enabled={eval_cfg['fqe']['enabled']}, n_steps={eval_cfg['fqe']['n_steps']}")
+    print("=" * 80)
 
     # Setup paths
     hpo_dir = db_paths['reward_dir'] / "HPO_results"
@@ -48,6 +58,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     seed = config['processing']['random_state']
     gamma = 0.99
+    bc_train_split = config['evaluation']['bc']['train_split']  # First split from list
 
     all_results = []
 
@@ -90,7 +101,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
 
             # Evaluate BC model
             if config['evaluation']['algorithms']['bc']:
-                model_path = bc_dir / f"bc_{mdp_name}_model.d3"
+                model_path = bc_dir / f"bc_{mdp_name}_{bc_train_split}.d3"
                 model = load_model(model_path=model_path, device=device)
                 if model is not None:
                     result = evaluate_algo(
@@ -121,6 +132,8 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
         print(results_df.to_string(index=False))
 
         if config['evaluation']['output']['save_metrics']:
+            # Add metadata columns
+            results_df = add_metadata_to_df(results_df, metadata)
             results_df.to_csv(output_dir / "evaluation_results.csv", index=False)
 
         if config['evaluation']['output']['save_plots']:
@@ -143,7 +156,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
             print(f"\n--- {mdp_name.upper()} ---")
 
             # Load BC model once per MDP
-            bc_path = bc_dir / f"bc_{mdp_name}_model.d3"
+            bc_path = bc_dir / f"bc_{mdp_name}_{bc_train_split}.d3"
             bc_model = load_model(model_path=bc_path, device=device)
 
             if bc_model is None:
@@ -184,6 +197,8 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
             print(algo_vs_bc_df.to_string(index=False))
 
             if config['evaluation']['output']['save_metrics']:
+                # Add metadata columns
+                algo_vs_bc_df = add_metadata_to_df(algo_vs_bc_df, metadata)
                 algo_vs_bc_df.to_csv(output_dir / "evaluation_algo_vs_bc.csv", index=False)
 
             if config['evaluation']['output']['save_plots']:
@@ -204,7 +219,19 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
                     filename_prefix="evaluation_algo_vs_bc"
                 )
 
+    # Save run configuration JSON
+    eval_config = {
+        'fqe_enabled': config['evaluation']['fqe']['enabled'],
+        'fqe_n_steps': config['evaluation']['fqe']['n_steps'],
+        'fqe_learning_rate': config['evaluation']['fqe']['learning_rate'],
+        'splits': config['evaluation']['splits'],
+        'mdps': config['evaluation']['mdps'],
+    }
+    save_run_config(output_dir, metadata, eval_config=eval_config)
+
+    run_id = metadata['run_id']
     print(f"\nResults saved to: {output_dir}")
+    print(f"Run config saved to: run_{run_id}_config.json")
 
 
 if __name__ == "__main__":

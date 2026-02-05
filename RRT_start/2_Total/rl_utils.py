@@ -41,7 +41,7 @@ def compute_mc_return(episodes, gamma=0.99):
     return np.mean(returns), np.std(returns)
 
 
-def function_fqe(algo, dataset, fqe_config, n_steps, device, seed):
+def function_fqe(algo, dataset, fqe_config, n_steps, device, seed, return_config=False):
     """
     Run single FQE evaluation.
 
@@ -52,9 +52,10 @@ def function_fqe(algo, dataset, fqe_config, n_steps, device, seed):
         n_steps: Number of training steps
         device: 'cuda:0' or 'cpu'
         seed: Random seed
+        return_config: If True, also return FQE config dict
 
     Returns:
-        Initial state value estimate
+        Initial state value estimate (or tuple with config if return_config=True)
     """
     d3rlpy.seed(seed)
 
@@ -68,7 +69,18 @@ def function_fqe(algo, dataset, fqe_config, n_steps, device, seed):
     )
 
     isv_evaluator = InitialStateValueEstimationEvaluator(dataset.episodes)
-    return isv_evaluator(fqe, dataset)
+    isv = isv_evaluator(fqe, dataset)
+
+    if return_config:
+        eval_config = {
+            'fqe_n_steps': n_steps,
+            'fqe_learning_rate': fqe_config.learning_rate,
+            'fqe_gamma': fqe_config.gamma,
+            'n_episodes_eval': len(dataset.episodes),
+        }
+        return isv, eval_config
+
+    return isv
 
 
 def bootstrap_fqe(algo, dataset, fqe_config, n_bootstrap, n_steps, device, seed, CI=0.95):
@@ -107,7 +119,7 @@ def bootstrap_fqe(algo, dataset, fqe_config, n_bootstrap, n_steps, device, seed,
             n_steps=n_steps,
             n_steps_per_epoch=n_steps,
             show_progress=True
-                )
+            )
 
         # Evaluate
         isv_evaluator = InitialStateValueEstimationEvaluator(episodes)
@@ -314,6 +326,7 @@ def evaluate_algo(algo, algo_name, dataset, device, seed, mc_mean, mc_std,
         'algorithm': algo_name,
         'mc_return_mean': mc_mean,
         'mc_return_std': mc_std,
+        'n_episodes_eval': len(dataset.episodes),
         **metrics
     }
 
@@ -339,6 +352,9 @@ def evaluate_algo(algo, algo_name, dataset, device, seed, mc_mean, mc_std,
             seed=seed
         )
         result['fqe_isv'] = fqe_isv
+        result['fqe_n_steps'] = fqe_n_steps
+        result['fqe_learning_rate'] = fqe_learning_rate
+        result['fqe_gamma'] = gamma
 
         # Bootstrap only for confidence intervals
         if fqe_bootstrap_enabled:
@@ -364,7 +380,11 @@ def evaluate_algo(algo, algo_name, dataset, device, seed, mc_mean, mc_std,
 
 
 def train_cql(train_ds, val_ds, alpha, learning_rate, batch_size, gamma, n_critics, hidden_units, n_steps, n_steps_per_epoch, device, save_interval, name):
-    """Train CQL and collect metrics."""
+    """Train CQL and collect metrics.
+
+    Returns:
+        Tuple of (model, metrics_df, training_config)
+    """
 
     # Configuration of CQL
     cql = DiscreteCQLConfig(
@@ -376,6 +396,18 @@ def train_cql(train_ds, val_ds, alpha, learning_rate, batch_size, gamma, n_criti
         encoder_factory=VectorEncoderFactory(hidden_units=hidden_units),
     ).create(device=device)
 
+    # Store training config for traceability
+    training_config = {
+        'algorithm': 'cql',
+        'alpha': alpha,
+        'learning_rate': learning_rate,
+        'batch_size': batch_size,
+        'gamma': gamma,
+        'n_critics': n_critics,
+        'hidden_units': hidden_units,
+        'n_steps': n_steps,
+        'n_steps_per_epoch': n_steps_per_epoch,
+    }
 
     evaluators = {
         'td_train': TDErrorEvaluator(episodes=train_ds.episodes),
@@ -384,27 +416,29 @@ def train_cql(train_ds, val_ds, alpha, learning_rate, batch_size, gamma, n_criti
         'action_match': DiscreteActionMatchEvaluator(episodes=val_ds.episodes),
     }
 
-    n_steps = n_steps   
-    n_steps_per_epoch = n_steps_per_epoch   
     metrics = []
 
-    for epoch, m in cql.fit(train_ds, 
-                            n_steps=n_steps, 
+    for epoch, m in cql.fit(train_ds,
+                            n_steps=n_steps,
                             n_steps_per_epoch=n_steps_per_epoch,
-                            evaluators=evaluators, 
-                            show_progress=True, 
+                            evaluators=evaluators,
+                            show_progress=True,
                             save_interval=save_interval,
                             experiment_name=f"cql_{name}"):
-        
+
         m['epoch'], m['step'] = epoch, epoch * n_steps_per_epoch
         metrics.append(m)
         if epoch % 5 == 0:
             print(f"  Epoch {epoch}: TD={m['td_val']:.4f}, ISV={m['isv_val']:.4f}, Match={m['action_match']:.1%}")
 
-    return cql, pd.DataFrame(metrics)
+    return cql, pd.DataFrame(metrics), training_config
 
 def train_bc(train_ds, val_ds, learning_rate, batch_size, beta, hidden_units, n_steps, n_steps_per_epoch, device, name):
-    """Train Behavior Cloning and collect metrics."""
+    """Train Behavior Cloning and collect metrics.
+
+    Returns:
+        Tuple of (model, metrics_df, training_config)
+    """
 
     bc = DiscreteBCConfig(
         learning_rate=learning_rate,
@@ -412,6 +446,17 @@ def train_bc(train_ds, val_ds, learning_rate, batch_size, beta, hidden_units, n_
         beta=beta,
         encoder_factory=VectorEncoderFactory(hidden_units=hidden_units),
     ).create(device=device)
+
+    # Store training config for traceability
+    training_config = {
+        'algorithm': 'bc',
+        'learning_rate': learning_rate,
+        'batch_size': batch_size,
+        'beta': beta,
+        'hidden_units': hidden_units,
+        'n_steps': n_steps,
+        'n_steps_per_epoch': n_steps_per_epoch,
+    }
 
     metrics = []
     for epoch, m in bc.fit(train_ds,
@@ -423,4 +468,4 @@ def train_bc(train_ds, val_ds, learning_rate, batch_size, beta, hidden_units, n_
         m['epoch'], m['step'] = epoch, epoch * n_steps_per_epoch
         metrics.append(m)
 
-    return bc, pd.DataFrame(metrics)
+    return bc, pd.DataFrame(metrics), training_config

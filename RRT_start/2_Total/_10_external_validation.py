@@ -11,6 +11,7 @@ import torch
 from utils import load_config, get_data_paths, load_mdp, load_model
 from rl_utils import evaluate_algo, compute_mc_return, compute_metrics_algo_vs_algo
 from rl_plotting import plot_evaluation_vs_behaviour_policy, plot_evaluation_algo_vs_bc
+from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
 
 def main():
@@ -48,9 +49,14 @@ def run_external_validation(config: dict, all_paths: dict):
     source_paths = all_paths[source_db]
     target_paths = all_paths[target_db]
 
-    print(f"\n{'='*60}")
-    print(f"EXTERNAL VALIDATION: {source_db.upper()} → {target_db.upper()}")
-    print(f"{'='*60}")
+    # Generate run metadata for traceability (using target db as context)
+    metadata = get_run_metadata(config, f"{source_db}_to_{target_db}")
+    print_run_header(metadata, title="EXTERNAL VALIDATION")
+
+    print(f"\nVALIDATION CONFIG:")
+    print(f"  Source: {source_db.upper()} | Target: {target_db.upper()}")
+    print(f"  splits: {ext_cfg['splits']} | MDPs: {ext_cfg['mdps']}")
+    print(f"  FQE: enabled={ext_cfg['fqe']['enabled']}, n_steps={ext_cfg['fqe']['n_steps']}")
 
     # Settings
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -64,6 +70,11 @@ def run_external_validation(config: dict, all_paths: dict):
     else:
         model_dir = source_paths['reward_dir'] / "Ablation_results"
     bc_dir = source_paths['reward_dir'] / "BC_results"
+
+    print(f"\nMODEL SOURCES ({model_source.upper()}):")
+    print(f"  RL models: {model_dir}")
+    print(f"  BC model: {bc_dir} (train_split={ext_cfg['bc']['train_split']})")
+    print("=" * 80)
 
     # Output directory (in target database)
     output_dir = target_paths['reward_dir'] / "External_validation_results"
@@ -119,7 +130,8 @@ def run_external_validation(config: dict, all_paths: dict):
 
             # Evaluate BC model trained on SOURCE
             if ext_cfg['algorithms']['bc']:
-                model_path = bc_dir / f"bc_{mdp_name}_model.d3"
+                train_split = ext_cfg['bc']['train_split']
+                model_path = bc_dir / f"bc_{mdp_name}_{train_split}.d3"
                 model = load_model(model_path=model_path, device=device)
                 if model is not None:
                     result = evaluate_algo(
@@ -154,6 +166,8 @@ def run_external_validation(config: dict, all_paths: dict):
         print(results_df.to_string(index=False))
 
         if ext_cfg['output']['save_metrics']:
+            # Add metadata columns
+            results_df = add_metadata_to_df(results_df, metadata)
             results_df.to_csv(output_dir / "external_validation_results.csv", index=False)
 
         if ext_cfg['output']['save_plots']:
@@ -176,7 +190,8 @@ def run_external_validation(config: dict, all_paths: dict):
             print(f"\n--- {mdp_name.upper()} ---")
 
             # Load BC model once per MDP (from SOURCE database)
-            bc_path = bc_dir / f"bc_{mdp_name}_model.d3"
+            train_split = ext_cfg['bc']['train_split']
+            bc_path = bc_dir / f"bc_{mdp_name}_{train_split}.d3"
             bc_model = load_model(model_path=bc_path, device=device)
 
             if bc_model is None:
@@ -224,6 +239,8 @@ def run_external_validation(config: dict, all_paths: dict):
             print(algo_vs_bc_df.to_string(index=False))
 
             if ext_cfg['output']['save_metrics']:
+                # Add metadata columns
+                algo_vs_bc_df = add_metadata_to_df(algo_vs_bc_df, metadata)
                 algo_vs_bc_df.to_csv(output_dir / "external_validation_algo_vs_bc.csv", index=False)
 
             if ext_cfg['output']['save_plots']:
@@ -244,7 +261,21 @@ def run_external_validation(config: dict, all_paths: dict):
                     filename_prefix="external_validation_algo_vs_bc"
                 )
 
+    # Save run configuration JSON
+    eval_config = {
+        'source_database': source_db,
+        'target_database': target_db,
+        'fqe_enabled': ext_cfg['fqe']['enabled'],
+        'fqe_n_steps': ext_cfg['fqe']['n_steps'],
+        'fqe_learning_rate': ext_cfg['fqe']['learning_rate'],
+        'splits': ext_cfg['splits'],
+        'mdps': ext_cfg['mdps'],
+    }
+    save_run_config(output_dir, metadata, eval_config=eval_config)
+
+    run_id = metadata['run_id']
     print(f"\nResults saved to: {output_dir}")
+    print(f"Run config saved to: run_{run_id}_config.json")
 
 
 if __name__ == "__main__":
