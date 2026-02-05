@@ -13,8 +13,8 @@ steps:
   mdp_preparation: false      # Create 5 MDP configurations
   train_test_split: false     # Split MDPDatasets into train/val/test
   ablation_study: true       # Train algorithms & compare MDPs
-  hpo: false                   # Hyperparameter optimization
-  hpo_optuna: true
+  hpo: true                   # Hyperparameter optimization
+  hpo_optuna: false
   behavior_cloning: true     # Train BC baseline model
   evaluation: true           # Compare HPO best with BC (same database)
   external_validation: true  # Cross-database validation
