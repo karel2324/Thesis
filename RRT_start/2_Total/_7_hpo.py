@@ -601,7 +601,7 @@ def compare_performance_algorithms(all_results: dict, val_ds, train_ds, config: 
         'algorithm': r['algorithm'],
         'config': r['config'],
         'fqe_isv': r['fqe_isv'],
-        'fqe_isv_mean': r.get['fqe_isv_mean', np.nan],
+        'fqe_isv_mean': r.get('fqe_isv_mean', np.nan),
         'fqe_isv_ci_low': r.get('ci_low', np.nan),
         'fqe_isv_ci_high': r.get('ci_high', np.nan),
         'isv_val': r['isv_val'],
