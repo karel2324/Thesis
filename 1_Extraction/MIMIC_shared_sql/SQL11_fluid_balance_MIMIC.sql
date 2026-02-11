@@ -1,11 +1,17 @@
 /* ===============================================================
-   SQL11_fluid_balance.sql - MIMIC-IV Fluid Balance
+   SQL11_fluid_balance.sql - MIMIC-IV Fluid Balance (IMPROVED)
 
-   Analogue to AUMCdb SQL11_Fluid_balance.sql
+   Key improvements over previous version:
+   1. Unit conversion: handles both 'ml' AND 'L' (×1000)
+   2. Bolus smoothing: instant boluses (≤1 min) spread over 1 hour
+   3. Excludes cancelled/rewritten orders
+   4. Uses SECOND precision for proportional allocation
+   5. Fixed JOIN duplication bug: old query JOIN'd grid (multiple rows
+      per stay) causing N× overcounting of fluid input (e.g. 21× for
+      obs7/grid8 → +60L fluid balances). Now uses WHERE IN subquery.
 
-   Key differences:
-   - Uses inputevents for IV fluids
-   - Uses outputevents for fluid output
+   Approach: proportional allocation within lookback window.
+   Mathematically equivalent to rate-based integration for totals.
    =============================================================== */
 
 CREATE OR REPLACE TABLE `windy-forge-475207-e3.${DATASET}.grid_fluid_balance` AS
@@ -34,14 +40,18 @@ grid AS (
 /* ===============================================================
    2) FLUID OUTPUT (outputevents - all outputs including urine)
    =============================================================== */
+cohort_stays AS (
+  SELECT DISTINCT stay_id FROM grid
+),
+
 fluid_out_raw AS (
   SELECT DISTINCT
     oe.stay_id,
     TIMESTAMP(oe.charttime) AS ts,
     SAFE_CAST(oe.value AS FLOAT64) AS vol_ml
   FROM `physionet-data.mimiciv_3_1_icu.outputevents` oe
-  JOIN grid g ON g.stay_id = oe.stay_id
-  WHERE oe.value IS NOT NULL
+  WHERE oe.stay_id IN (SELECT stay_id FROM cohort_stays)
+    AND oe.value IS NOT NULL
     AND oe.value > 0
 ),
 
@@ -62,22 +72,43 @@ fluid_out_lb_at_grid AS (
 ),
 
 /* ===============================================================
-   3) FLUID INPUT (inputevents - IV fluids)
-      Uses amountuom = 'ml' for volume-based inputs
+   3) FLUID INPUT (inputevents)
+
+   Fixes:
+   - Unit conversion: 'ml' as-is, 'L' × 1000
+   - Bolus smoothing: if duration ≤ 1 minute, assume given over 1 hour
+     (prevents division by zero and unrealistic spikes)
+   - Exclude cancelled/rewritten orders
    =============================================================== */
 fluid_in_raw AS (
   SELECT
     ie.stay_id,
-    TIMESTAMP(ie.starttime) AS start_ts,
+
+    -- Bolus smoothing: if near-instantaneous, spread over 1 hour
+    CASE
+      WHEN TIMESTAMP_DIFF(TIMESTAMP(ie.endtime), TIMESTAMP(ie.starttime), MINUTE) <= 1
+      THEN TIMESTAMP_SUB(TIMESTAMP(ie.endtime), INTERVAL 1 HOUR)
+      ELSE TIMESTAMP(ie.starttime)
+    END AS start_ts,
+
     TIMESTAMP(ie.endtime) AS end_ts,
-    ie.amount AS vol_ml
+
+    -- Unit conversion to ml
+    CASE
+      WHEN LOWER(ie.amountuom) = 'l'  THEN ie.amount * 1000.0
+      WHEN LOWER(ie.amountuom) = 'ml' THEN ie.amount
+      ELSE NULL
+    END AS vol_ml
+
   FROM `physionet-data.mimiciv_3_1_icu.inputevents` ie
-  JOIN grid g ON g.stay_id = ie.stay_id
-  WHERE ie.amount IS NOT NULL
+  WHERE ie.stay_id IN (SELECT stay_id FROM cohort_stays)
+    AND ie.amount IS NOT NULL
     AND ie.amount > 0
-    AND LOWER(ie.amountuom) = 'ml'
+    AND LOWER(ie.amountuom) IN ('ml', 'l')
     AND ie.starttime IS NOT NULL
     AND ie.endtime IS NOT NULL
+    -- Exclude cancelled/rewritten orders
+    AND LOWER(COALESCE(ie.statusdescription, '')) != 'rewritten'
 ),
 
 fluid_in_lb_at_grid AS (
@@ -89,20 +120,18 @@ fluid_in_lb_at_grid AS (
 
     IFNULL(
       SUM(
+        -- Overlap fraction: how much of the infusion falls in the lookback window
         GREATEST(
           0.0,
           TIMESTAMP_DIFF(
-            LEAST(g.grid_ts, e.end_ts),
-            GREATEST(
-              TIMESTAMP_SUB(g.grid_ts, INTERVAL cfg.fb_lb_hours HOUR),
-              e.start_ts
-            ),
-            MINUTE
-          ) / 60.0
+            LEAST(g.grid_ts, e.end_ts),                                      -- window end
+            GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL cfg.fb_lb_hours HOUR), e.start_ts), -- window start
+            SECOND
+          )
         )
         / NULLIF(
-            TIMESTAMP_DIFF(e.end_ts, e.start_ts, MINUTE) / 60.0,
-            0.0
+            TIMESTAMP_DIFF(e.end_ts, e.start_ts, SECOND),
+            0
           )
         * e.vol_ml
       ),
@@ -114,6 +143,8 @@ fluid_in_lb_at_grid AS (
     ON e.stay_id = g.stay_id
    AND e.end_ts   > TIMESTAMP_SUB(g.grid_ts, INTERVAL cfg.fb_lb_hours HOUR)
    AND e.start_ts < g.grid_ts
+  WHERE e.vol_ml IS NOT NULL  -- Filter out NULL from unit conversion
+     OR e.stay_id IS NULL     -- Keep grid rows without any input (LEFT JOIN)
   GROUP BY g.subject_id, g.hadm_id, g.stay_id, g.grid_ts
 )
 

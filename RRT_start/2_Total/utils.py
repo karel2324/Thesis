@@ -68,12 +68,12 @@ def get_data_paths(config: dict) -> dict:
     Folder structure:
         derived_AUMCdb_obs7_grid4_sepsis/
         ├── Full_dataset/                    # Shared (pre-reward)
-        │   ├── aumc_rrt_raw.parquet
-        │   ├── aumc_rrt_imputed.parquet
+        │   ├── aumcdb_rrt_raw.parquet
+        │   ├── aumcdb_rrt_imputed.parquet
         │   └── mice_imputer.joblib
         └── Reward_mpen-no_disc-1/           # Reward-specific
-            ├── aumc_rrt_rewards.parquet
-            ├── aumc_rrt_scaled.parquet
+            ├── aumcdb_rrt_rewards.parquet
+            ├── aumcdb_rrt_scaled.parquet
             ├── scaler.joblib
             └── MDP/
 
