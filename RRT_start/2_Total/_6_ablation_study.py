@@ -15,7 +15,7 @@ from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluato
 from d3rlpy.models.encoders import VectorEncoderFactory
 
 from utils import load_mdp
-from rl_utils import compute_mc_return, bootstrap_fqe, train_cql, train_bc, function_fqe
+from rl_utils import compute_mc_return, bootstrap_fqe, train_cql, train_bc, function_fqe, uncertainty_fqe
 from rl_plotting import plot_training_curves, plot_fqe_comparison
 from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
@@ -196,15 +196,17 @@ def run_ablation_for_db(db_paths: dict, config: dict):
         # FOR CONSERVATIVE Q-LEARNING
         # Loop over different CQL-models, just normal FQE
         for name in CQL_MODELS:
-            m_isv = function_fqe(
+            fqe_isv = function_fqe(
                 algo = CQL_MODELS[name],
-                dataset = DATASETS[name]['val'],
+                dataset_train = DATASETS[name]['train'],
+                dataset_val = DATASETS[name]['val'],
                 fqe_config = fqe_config,
-                n_steps = config['ablation']['fqe']['n_steps'],
+                n_steps_per_epoch = config['ablation']['fqe']['n_steps']//10,
+                n_epochs= 10,
                 seed = seed,
                 device = device)
-            FQE_CQL[name] = {'mean': m_isv}
-            print(f"  {name}: {m_isv:.4f}")
+            FQE_CQL[name] = {'fqe_isv': fqe_isv}
+            print(f"  {name}: {fqe_isv:.4f}")
         
         # Only if you want to bootstrap
         if config['ablation']['fqe']['bootstrap']['enabled']:
@@ -212,9 +214,10 @@ def run_ablation_for_db(db_paths: dict, config: dict):
             print(f"\n--- FQE (CQL) with {n_bootstrap}x bootstrap ---")
 
             for name in CQL_MODELS:
-                _, ci_lo, ci_hi = bootstrap_fqe(
+                m_isv, ci_lo, ci_hi = uncertainty_fqe(
                     algo=CQL_MODELS[name],
-                    dataset=DATASETS[name]['val'],
+                    dataset_train = DATASETS[name]['train'],
+                    dataset_val = DATASETS[name]['val'],
                     fqe_config=fqe_config,
                     n_bootstrap=config['ablation']['fqe']['bootstrap']['n_bootstrap'],
                     n_steps=config['ablation']['fqe']['bootstrap']['n_steps'],
@@ -223,8 +226,8 @@ def run_ablation_for_db(db_paths: dict, config: dict):
                     CI=config['ablation']['fqe']['bootstrap']['confidence_level']
                 )
 
-                FQE_CQL[name].update({'ci_low': ci_lo, 'ci_high': ci_hi})
-                print(f"  {name}: {m_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
+                FQE_CQL[name].update({'mean_isv': m_isv, 'ci_low': ci_lo, 'ci_high': ci_hi})
+                print(f"  {name}: {fqe_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
 
         # FOR BEHAVIOR CLONING (BASELINE COMPARE)
         if BC_MODELS:
@@ -232,15 +235,17 @@ def run_ablation_for_db(db_paths: dict, config: dict):
 
             # Loop over different BC-models, just normal FQE
             for name in BC_MODELS:
-                m_isv = function_fqe(
+                fqe_isv = function_fqe(
                     algo = BC_MODELS[name],
-                    dataset = DATASETS[name]['val'],
+                    dataset_train = DATASETS[name]['train'],
+                    dataset_val = DATASETS[name]['val'],
                     fqe_config = fqe_config,
-                    n_steps = config['ablation']['fqe']['n_steps'],
+                    n_steps_per_epoch = config['ablation']['fqe']['n_steps']//10,
+                    n_epochs= 10,
                     seed = seed,
                     device = device)
-                FQE_BC[name] = {'mean': m_isv}
-                print(f"  {name}: {m_isv:.4f}")
+                FQE_BC[name] = {'fqe_isv': fqe_isv}
+                print(f"  {name}: {fqe_isv:.4f}")
             
             # Only if you want to bootstrap
             if config['ablation']['fqe']['bootstrap']['enabled']:
@@ -248,9 +253,10 @@ def run_ablation_for_db(db_paths: dict, config: dict):
                 print(f"\n--- FQE (BC) with {n_bootstrap}x bootstrap ---")
 
                 for name in BC_MODELS:
-                    _, ci_lo, ci_hi = bootstrap_fqe(
+                    m_isv, ci_lo, ci_hi = uncertainty_fqe(
                         algo=BC_MODELS[name],
-                        dataset=DATASETS[name]['val'],
+                        dataset_train = DATASETS[name]['train'],
+                        dataset_val = DATASETS[name]['val'],
                         fqe_config=fqe_config,
                         n_bootstrap=config['ablation']['fqe']['bootstrap']['n_bootstrap'],
                         n_steps=config['ablation']['fqe']['bootstrap']['n_steps'],
@@ -259,8 +265,8 @@ def run_ablation_for_db(db_paths: dict, config: dict):
                         CI=config['ablation']['fqe']['bootstrap']['confidence_level']
                     )
 
-                    FQE_BC[name].update({'ci_low': ci_lo, 'ci_high': ci_hi})
-                    print(f"  {name}: {m_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
+                    FQE_BC[name].update({'mean_isv': m_isv, 'ci_low': ci_lo, 'ci_high': ci_hi})
+                    print(f"  {name}: {fqe_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
     # =========================================================================
     # 6. PLOTS & SUMMARY
     # =========================================================================
@@ -276,8 +282,8 @@ def run_ablation_for_db(db_paths: dict, config: dict):
         'ISV_peak': RESULTS[name]['metrics']['isv_val'].max(),
         'Action_match': RESULTS[name]['metrics']['action_match'].iloc[-1],
         'MC_return': MC[name]['mean'],
-        'FQE_CQL': FQE_CQL.get(name, {}).get('mean', np.nan),
-        'FQE_BC': FQE_BC.get(name, {}).get('mean', np.nan),
+        'FQE_CQL': FQE_CQL.get(name, {}).get('fqe_isv', np.nan),
+        'FQE_BC': FQE_BC.get(name, {}).get('fqe_isv', np.nan),
     } for name in DATASETS]
 
     summary_df = pd.DataFrame(summary)

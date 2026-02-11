@@ -6,8 +6,8 @@ import sys
 from utils import load_config
 
 # Import main() from each pipeline step
-from _0_variable_inspection import main as variable_inspection
-from _1_imputation import main as imputation
+from _0_imputation import main as imputation
+from _1_variable_inspection import main as variable_inspection
 from _2_reward_calculation import main as reward_calculation
 from _3_scaling import main as scaling
 from _4_mdp_preparation import main as mdp_preparation
@@ -15,7 +15,7 @@ from _5_train_test_split import main as train_test_split
 from _6_ablation_study import main as ablation_study
 from _7_hpo import main as hpo_grid_search
 from _7_hpo_optuna import main as hpo_optuna
-from _8_behavior_cloning import main as behavior_cloning
+from _8_behavior_cloning import main as behavior_cloning 
 from _9_evaluation import main as evaluation
 from _10_external_validation import main as external_validation
 
@@ -52,8 +52,8 @@ def main():
     print("\nSTEPS TO RUN:")
     steps = config['steps']
     step_names = [
-        ('inspection', 'Step 0: Variable Inspection'),
-        ('imputation', 'Step 1: Imputation'),
+        ('imputation', 'Step 0: Imputation'),
+        ('inspection', 'Step 1: Variable Inspection'),
         ('reward_calculation', 'Step 2: Reward Calculation'),
         ('scaling', 'Step 3: Scaling'),
         ('mdp_preparation', 'Step 4: MDP Preparation'),
@@ -79,15 +79,15 @@ def main():
     print("DATA PREPARATION PHASE")
     print("=" * 60)
 
-    if config['steps']['inspection']:
-        print("\nStep 0: Variable Inspection...")
-        print("Generating inspection reports for raw and imputed data...")
-        variable_inspection()
-
     if config['steps']['imputation']:
-        print("\nStep 1: Imputation...")
+        print("\nStep 0: Imputation...")
         print("Applying clinical imputations and MICE...")
         imputation()
+
+    if config['steps']['inspection']:
+        print("\nStep 1: Variable Inspection...")
+        print("Generating inspection reports for raw and imputed data...")
+        variable_inspection()
 
     if config['steps']['reward_calculation']:
         print("\nStep 2: Reward Calculation...")

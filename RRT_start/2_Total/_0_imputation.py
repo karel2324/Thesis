@@ -15,7 +15,7 @@ import gc
 
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
-from sklearn.linear_model import BayesianRidge
+from sklearn.ensemble import ExtraTreesRegressor
 
 def main():
     """Main entry point for imputation."""
@@ -83,6 +83,70 @@ def apply_age_column_imputations(df: pd.DataFrame, config: dict) -> pd.DataFrame
 
     return df
 
+def impute_static_variables(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Impute static (per-visit) variables at visit level, then propagate."""
+    variables = config.get('variables', {})
+    random_state = config.get('processing', {}).get('random_state', 42)
+
+    # Static variables that need MICE imputation
+    static_cols = []
+    for var_name, var_config in variables.items():
+        if not var_config.get('static_per_visit', False):
+            continue
+        if var_config.get('impute_method') != 'mice':
+            continue
+        col_name = 'gender_encoded' if var_name == 'gender' else var_name
+        if col_name in df.columns and df[col_name].isnull().any():
+            static_cols.append(col_name)
+
+    if not static_cols:
+        print("\nNo static variables need visit-level imputation")
+        return df
+
+    print(f"\nImputing static variables at visit level:")
+    total_visits = df['visit_occurrence_id'].nunique()
+    for col in static_cols:
+        n_miss = df.loc[df[col].isnull(), 'visit_occurrence_id'].nunique()
+        print(f"  {col}: {n_miss}/{total_visits} visits missing")
+
+    # Predictors for visit-level imputation
+    predictor_names = ['age_years', 'weight_used_kg_person',
+                       'creat_last', 'hemoglobin_last', 'sofa_total_24h_current']
+    predictor_cols = [c for c in predictor_names
+                      if c in df.columns and c not in static_cols]
+
+    all_cols = static_cols + predictor_cols
+    print(f"  Predictors: {predictor_cols}")
+
+    # Collapse to visit level, impute, map back
+    visit_df = df.groupby('visit_occurrence_id')[all_cols].first().reset_index()
+
+    imputer = IterativeImputer(
+        estimator=ExtraTreesRegressor(n_estimators=10, random_state=random_state),
+        max_iter=10, random_state=random_state, verbose=0
+    )
+    imputed = imputer.fit_transform(visit_df[all_cols])
+    visit_df[static_cols] = imputed[:, :len(static_cols)]
+
+    # Post-processing: round binary, clip from config
+    for col in static_cols:
+        if col == 'gender_encoded':
+            visit_df[col] = visit_df[col].round().clip(0, 1).astype(int)
+        config_key = 'gender' if col == 'gender_encoded' else col
+        var_cfg = variables.get(config_key, {})
+        clip_min, clip_max = var_cfg.get('clip_min'), var_cfg.get('clip_max')
+        if clip_min is not None or clip_max is not None:
+            visit_df[col] = visit_df[col].clip(lower=clip_min, upper=clip_max)
+
+    # Map back to full dataframe
+    visit_map = visit_df.set_index('visit_occurrence_id')[static_cols]
+    for col in static_cols:
+        df[col] = df['visit_occurrence_id'].map(visit_map[col])
+        print(f"  {col}: done ({df[col].isnull().sum()} remaining missing)")
+
+    return df
+
+
 def get_mice_columns(df: pd.DataFrame, config: dict) -> list:
     """Identify columns for MICE based on config (impute_method: mice)."""
     variables = config.get('variables', {})
@@ -97,13 +161,14 @@ def get_mice_columns(df: pd.DataFrame, config: dict) -> list:
     return mice_cols
 
 
-def get_mice_predictors(df: pd.DataFrame, config: dict) -> tuple:
+def get_mice_predictors(df: pd.DataFrame, config: dict) -> list:
     """
     Get predictor columns for MICE based on mice_predictor: true in config.
 
-    Only variables with mice_predictor: true AND missing values are used as predictors.
-    This is because MICE works iteratively - variables predict each other.
-    Variables without missing values don't need to be in the MICE loop.
+    Only variables with mice_predictor: true and WITHOUT missing values are included.
+    These are complete columns that help predict the mice_cols but don't need
+    imputation themselves. Variables WITH missing values that have impute_method: mice
+    are already in mice_cols and predict each other iteratively within MICE.
     """
     variables = config.get('variables', {})
 
@@ -116,7 +181,7 @@ def get_mice_predictors(df: pd.DataFrame, config: dict) -> tuple:
         if var_config.get('mice_predictor', False):
             has_missing = df[var_name].isnull().any()
 
-            # Only include if variable has missing values (MICE imputes these iteratively)
+            # Only include if variable has NO missing values (complete predictors)
             if not has_missing:
                 predictors.append(var_name)
 
@@ -134,7 +199,14 @@ def apply_mice(df: pd.DataFrame, mice_cols: list, predictors: list, config: dict
     random_state = config.get('processing', {}).get('random_state', 42)
 
     mice = IterativeImputer(
-        estimator=BayesianRidge(),
+        estimator=ExtraTreesRegressor(
+            n_estimators=10,
+            max_depth=15,
+            max_features='sqrt',
+            min_samples_leaf=5,
+            random_state=random_state,
+            n_jobs=1,
+        ),
         max_iter=10,
         random_state=random_state,
         verbose=2,
@@ -154,8 +226,24 @@ def apply_mice(df: pd.DataFrame, mice_cols: list, predictors: list, config: dict
 
     imputed = mice.fit_transform(df[all_cols])
     df[mice_cols] = imputed[:, :len(mice_cols)]
-
     print("  MICE complete!")
+
+    # Post-MICE clinical clipping (safety net)
+    variables = config.get('variables', {})
+    n_clipped_total = 0
+    for col in mice_cols:
+        var_cfg = variables.get(col, {})
+        clip_min = var_cfg.get('clip_min')
+        clip_max = var_cfg.get('clip_max')
+        if clip_min is not None or clip_max is not None:
+            before = df[col].copy()
+            df[col] = df[col].clip(lower=clip_min, upper=clip_max)
+            n_clipped = (before != df[col]).sum()
+            if n_clipped > 0:
+                print(f"    {col}: {n_clipped:,} values clipped to [{clip_min}, {clip_max}]")
+                n_clipped_total += n_clipped
+    print(f"  Total clipped: {n_clipped_total:,}")
+
     return df, mice, mice_cols, predictors, {}
 
 
@@ -189,13 +277,33 @@ def run_imputation_for_db(db_paths: dict, config: dict):
     print(f"  Columns with missing: {len(missing_cols)}")
     print(f"  Total missing values: {missing_cols.sum():,}")
 
+    # Step 0: Exclude visits with too much missing data
+    min_missing_pct = config.get('processing', {}).get('min_missing_visit', 0)
+    if min_missing_pct > 0:
+        variables = config.get('variables', {})
+        basic_cols = [v for v, cfg in variables.items()
+                      if cfg.get('basic_feature') and v in df.columns]
+
+        missing_frac = (df.groupby('visit_occurrence_id')[basic_cols]
+                        .apply(lambda x: x.isnull().mean().mean()))
+        threshold = min_missing_pct / 100.0
+        bad_visits = missing_frac[missing_frac > threshold].index
+
+        if len(bad_visits) > 0:
+            n_rows_before = len(df)
+            df = df[~df['visit_occurrence_id'].isin(bad_visits)]
+            print(f"\nExcluded {len(bad_visits)} visits with >{min_missing_pct}% missing basic features")
+            print(f"  Rows: {n_rows_before:,} -> {len(df):,} ({n_rows_before - len(df):,} removed)")
+        else:
+            print(f"\nNo visits exceeded {min_missing_pct}% missing threshold")
+
     # Step 1: Clinical imputations (impute_method: clinical_value)
     df = apply_clinical_imputations(df, config)
 
     # Step 2: Age column imputations (_age_h, _hours)
     df = apply_age_column_imputations(df, config)
 
-    # Create helper columns for MICE
+    # Create helper columns
     if 'hours_since_t0' not in df.columns:
         df['hours_since_t0'] = (
             pd.to_datetime(df['grid_ts']) - pd.to_datetime(df['t0'])
@@ -204,24 +312,28 @@ def run_imputation_for_db(db_paths: dict, config: dict):
     if 'gender_encoded' not in df.columns:
         df['gender_encoded'] = df['gender'].map({'M': 1, 'F': 0})
 
+    # Step 3: Impute static variables at visit level (gender, weight)
+    df = impute_static_variables(df, config)
 
-    # Step 3: MICE imputation (impute_method: mice)
+    # Step 4: MICE imputation for time-varying variables (impute_method: mice)
     mice_cols = get_mice_columns(df, config)
     predictors = get_mice_predictors(df, config)
-    
-    # Step 4: Add hours since t0 and gender_encode:
-    if df['gender_encoded'].isna().any():
-        mice_cols.append('gender_encoded')
-    else:
-        predictors.append('gender_encoded')
-    
+
+    # Add gender_encoded as predictor (now complete after static imputation)
+    if 'gender_encoded' not in predictors and 'gender_encoded' not in mice_cols:
+        if 'gender_encoded' in df.columns and not df['gender_encoded'].isnull().any():
+            predictors.append('gender_encoded')
+
+    # Remove string gender column from MICE lists (not numeric)
     if 'gender' in mice_cols:
         mice_cols.remove('gender')
     if 'gender' in predictors:
         predictors.remove('gender')
-    
-    predictors.append('hours_since_t0')
-    
+
+    # Add hours_since_t0 as predictor (avoid duplicate from config)
+    if 'hours_since_t0' not in predictors:
+        predictors.append('hours_since_t0')
+
     df, mice_imputer, final_cols, final_preds, _ = apply_mice(
         df, mice_cols, predictors, config
     )

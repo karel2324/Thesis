@@ -13,7 +13,6 @@ Contains:
 import numpy as np
 import d3rlpy
 from d3rlpy.ope import DiscreteFQE, FQEConfig
-from d3rlpy.metrics import InitialStateValueEstimationEvaluator
 from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluator, DiscreteActionMatchEvaluator
 from d3rlpy.models.encoders import VectorEncoderFactory
 from d3rlpy.algos import DiscreteCQLConfig, DiscreteBCConfig
@@ -41,7 +40,7 @@ def compute_mc_return(episodes, gamma=0.99):
     return np.mean(returns), np.std(returns)
 
 
-def function_fqe(algo, dataset, fqe_config, n_steps, device, seed, return_config=False):
+def function_fqe(algo, dataset_train, dataset_val, fqe_config, n_steps_per_epoch, n_epochs, device, seed, return_config=False):
     """
     Run single FQE evaluation.
 
@@ -61,29 +60,32 @@ def function_fqe(algo, dataset, fqe_config, n_steps, device, seed, return_config
 
     fqe = DiscreteFQE(algo=algo, config=fqe_config, device=device)
     fqe.fit(
-        dataset,
-        n_steps=n_steps,
-        n_steps_per_epoch=n_steps,
+        dataset_train,
+        n_steps=n_steps_per_epoch * n_epochs,
+        n_steps_per_epoch=n_steps_per_epoch,
         show_progress=True,
-        evaluators={'isv': InitialStateValueEstimationEvaluator(dataset.episodes)}
+        evaluators={
+            'td_train': TDErrorEvaluator(dataset_train.episodes),
+            'td_val': TDErrorEvaluator(dataset_val.episodes),
+            'isv_val': InitialStateValueEstimationEvaluator(dataset_val.episodes)}
     )
 
-    isv_evaluator = InitialStateValueEstimationEvaluator(dataset.episodes)
-    isv = isv_evaluator(fqe, dataset)
+    isv_evaluator = InitialStateValueEstimationEvaluator(dataset_val.episodes)
+    isv = isv_evaluator(fqe, dataset_val)
 
     if return_config:
         eval_config = {
-            'fqe_n_steps': n_steps,
+            'fqe_n_steps': n_steps_per_epoch * n_epochs,
             'fqe_learning_rate': fqe_config.learning_rate,
             'fqe_gamma': fqe_config.gamma,
-            'n_episodes_eval': len(dataset.episodes),
+            'n_episodes_eval': len(dataset_val.episodes),
         }
         return isv, eval_config
 
     return isv
 
 
-def bootstrap_fqe(algo, dataset, fqe_config, n_bootstrap, n_steps, device, seed, CI=0.95):
+def bootstrap_fqe(algo, dataset_train, dataset_val, fqe_config, n_bootstrap, n_steps, device, seed, CI=0.95):
     """
     FQE with bootstrap confidence intervals.
 
@@ -102,15 +104,15 @@ def bootstrap_fqe(algo, dataset, fqe_config, n_bootstrap, n_steps, device, seed,
         Bootstrap is for uncertainty of model. So states are bootstrapped for FQE,
         but bootstrapped mean ISV is of the bootstrapped FQE-function on the original states. 
     """
-    episodes = dataset.episodes
+    episodes_train = dataset_train.episodes
     boot_vals = []
 
     for b in range(n_bootstrap):
         d3rlpy.seed(seed + b)
 
         # Create bootstrapped dataset
-        idx = np.random.choice(len(episodes), size=len(episodes), replace=True)
-        bootstrap_dataset = episodes_to_mdp([episodes[j] for j in idx])
+        idx = np.random.choice(len(episodes_train), size=len(episodes_train), replace=True)
+        bootstrap_dataset = episodes_to_mdp([episodes_train[j] for j in idx])
 
         # Fit FQE
         fqe = DiscreteFQE(algo=algo, config=fqe_config, device=device)
@@ -122,8 +124,53 @@ def bootstrap_fqe(algo, dataset, fqe_config, n_bootstrap, n_steps, device, seed,
             )
 
         # Evaluate
-        isv_evaluator = InitialStateValueEstimationEvaluator(episodes)
-        boot_vals.append(isv_evaluator(fqe, dataset))
+        isv_evaluator = InitialStateValueEstimationEvaluator(dataset_val.episodes)
+        boot_vals.append(isv_evaluator(fqe, dataset_val))
+
+    # Calculate confidence interval
+    alpha = 1 - CI
+    lower_ci = np.percentile(boot_vals, 100 * alpha / 2)
+    upper_ci = np.percentile(boot_vals, 100 * (1 - alpha / 2))
+    mean_val = np.mean(boot_vals)
+
+    return mean_val, lower_ci, upper_ci
+
+def uncertainty_fqe(algo, dataset_train, dataset_val, fqe_config, n_bootstrap, n_steps, device, seed, CI=0.95):
+    """
+    FQE with bootstrap confidence intervals.
+
+    Args:
+        algo: Trained RL algorithm
+        dataset: Dataset to evaluate on
+        fqe_config: FQEConfig object
+        n_bootstrap: Number of bootstrap samples
+        n_steps: FQE training steps per bootstrap
+        device: 'cuda:0' or 'cpu'
+        seed: Random seed
+        CI: Confidence interval level (default 0.95)
+
+    Returns:
+        Tuple of (mean_value, ci_lower, ci_upper)
+        Bootstrap is for uncertainty of model. So states are bootstrapped for FQE,
+        but bootstrapped mean ISV is of the bootstrapped FQE-function on the original states. 
+    """
+    boot_vals = []
+
+    for b in range(n_bootstrap):
+        d3rlpy.seed(seed + b)
+
+        # Fit FQE
+        fqe = DiscreteFQE(algo=algo, config=fqe_config, device=device)
+        fqe.fit(
+            dataset_train,
+            n_steps=n_steps,
+            n_steps_per_epoch=n_steps,
+            show_progress=True
+            )
+
+        # Evaluate
+        isv_evaluator = InitialStateValueEstimationEvaluator(dataset_val.episodes)
+        boot_vals.append(isv_evaluator(fqe, dataset_val))
 
     # Calculate confidence interval
     alpha = 1 - CI
@@ -289,8 +336,9 @@ def compute_metrics_algo_vs_algo(algo1, algo2, dataset):
     }
 
 
-def evaluate_algo(algo, algo_name, dataset, device, seed, mc_mean, mc_std,
-                  fqe_enabled=True, fqe_learning_rate=0.0001, fqe_n_steps=10000,
+def evaluate_algo(algo, algo_name, dataset_train, dataset_val, device, seed, mc_mean, mc_std,
+                  fqe_n_steps_per_epoch, fqe_n_epochs,
+                  fqe_enabled=True, fqe_learning_rate=0.0001, 
                   fqe_bootstrap_enabled=False, fqe_bootstrap_n_bootstrap=10,
                   fqe_bootstrap_n_steps=10000, fqe_bootstrap_confidence_level=0.95,
                   gamma=0.99):
@@ -320,13 +368,13 @@ def evaluate_algo(algo, algo_name, dataset, device, seed, mc_mean, mc_std,
     d3rlpy.seed(seed)
 
     # Basic metrics
-    metrics = compute_metrics_vs_behaviour_policy(algo=algo, dataset=dataset)
+    metrics = compute_metrics_vs_behaviour_policy(algo=algo, dataset=dataset_val)
 
     result = {
         'algorithm': algo_name,
         'mc_return_mean': mc_mean,
         'mc_return_std': mc_std,
-        'n_episodes_eval': len(dataset.episodes),
+        'n_episodes_eval': len(dataset_val.episodes),
         **metrics
     }
 
@@ -345,22 +393,25 @@ def evaluate_algo(algo, algo_name, dataset, device, seed, mc_mean, mc_std,
         # Always compute FQE ISV from function_fqe
         fqe_isv = function_fqe(
             algo=algo,
-            dataset=dataset,
+            dataset_train=dataset_train,
+            dataset_val=dataset_val,
             fqe_config=fqe_config,
-            n_steps=fqe_n_steps,
+            n_steps_per_epoch=fqe_n_steps_per_epoch,
+            n_epochs=fqe_n_epochs,
             device=device,
             seed=seed
         )
         result['fqe_isv'] = fqe_isv
-        result['fqe_n_steps'] = fqe_n_steps
+        result['fqe_n_steps'] = fqe_n_steps_per_epoch * fqe_n_epochs
         result['fqe_learning_rate'] = fqe_learning_rate
         result['fqe_gamma'] = gamma
 
         # Bootstrap only for confidence intervals
         if fqe_bootstrap_enabled:
-            _, ci_lo, ci_hi = bootstrap_fqe(
+            fqe_isv_mean, ci_lo, ci_hi = uncertainty_fqe(
                 algo=algo,
-                dataset=dataset,
+                dataset_train=dataset_train,
+                dataset_val=dataset_val,
                 fqe_config=fqe_config,
                 n_bootstrap=fqe_bootstrap_n_bootstrap,
                 n_steps=fqe_bootstrap_n_steps,
@@ -368,6 +419,7 @@ def evaluate_algo(algo, algo_name, dataset, device, seed, mc_mean, mc_std,
                 seed=seed,
                 CI=fqe_bootstrap_confidence_level
             )
+            result['fqe_isv_mean'] = fqe_isv_mean
             result['fqe_ci_low'] = ci_lo
             result['fqe_ci_high'] = ci_hi
             print(f", FQE={fqe_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")

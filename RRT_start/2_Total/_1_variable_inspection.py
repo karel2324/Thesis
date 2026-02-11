@@ -15,6 +15,85 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+def generate_frequency_tables(df: pd.DataFrame, db_name: str, output_dir: Path,
+                              stage: str = "raw", n_bins: int = 30):
+    """Generate frequency tables (CSV) and histograms (PNG) for all numeric columns."""
+    print(f"\n  Frequency tables & histograms ({stage}) for {db_name}...")
+
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+    # === 1. Frequency tables (CSV) ===
+    all_freq = []
+    for col in numeric_cols:
+        series = df[col].dropna()
+        if len(series) == 0:
+            continue
+
+        n_unique = series.nunique()
+        if n_unique <= 20:
+            # Discrete: direct value counts
+            vc = series.value_counts().sort_index()
+            for val, count in vc.items():
+                all_freq.append({
+                    'variable': col,
+                    'bin': val,
+                    'count': count,
+                    'pct': round(count / len(series) * 100, 2),
+                })
+        else:
+            # Continuous: binned
+            counts, edges = np.histogram(series, bins=n_bins)
+            for j in range(len(counts)):
+                all_freq.append({
+                    'variable': col,
+                    'bin': f"{edges[j]:.4g} - {edges[j+1]:.4g}",
+                    'count': int(counts[j]),
+                    'pct': round(counts[j] / len(series) * 100, 2),
+                })
+
+    freq_df = pd.DataFrame(all_freq)
+    csv_path = output_dir / f"{db_name.lower()}_{stage}_frequency_tables.csv"
+    freq_df.to_csv(csv_path, index=False)
+    print(f"    Saved: {csv_path.name}")
+
+    # === 2. Histogram grid (PNG) ===
+    # Filter to columns with data
+    plot_cols = [c for c in numeric_cols if df[c].notna().any()]
+    n_cols_plot = len(plot_cols)
+    cols_per_row = 5
+    n_rows = int(np.ceil(n_cols_plot / cols_per_row))
+
+    fig, axes = plt.subplots(n_rows, cols_per_row, figsize=(4 * cols_per_row, 3 * n_rows))
+    axes = np.atleast_2d(axes).flatten()
+
+    for idx, col in enumerate(plot_cols):
+        ax = axes[idx]
+        series = df[col].dropna()
+        n_unique = series.nunique()
+
+        if n_unique <= 20:
+            vc = series.value_counts().sort_index()
+            ax.bar(vc.index.astype(str), vc.values, color='steelblue', alpha=0.8)
+            ax.tick_params(axis='x', rotation=45, labelsize=6)
+        else:
+            ax.hist(series, bins=n_bins, color='steelblue', alpha=0.8, edgecolor='white', linewidth=0.3)
+
+        ax.set_title(col, fontsize=8, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=6)
+        ax.set_ylabel('count', fontsize=6)
+
+    # Hide unused axes
+    for idx in range(n_cols_plot, len(axes)):
+        axes[idx].set_visible(False)
+
+    fig.suptitle(f'{db_name} - Variable Distributions ({stage.capitalize()})', fontsize=14, y=1.01)
+    plt.tight_layout()
+    fig_path = output_dir / f"{db_name.lower()}_{stage}_histograms.png"
+    plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    Saved: {fig_path.name}")
+
+
 def main():
     """Main entry point for variable inspection."""
     from utils import load_config, get_data_paths
@@ -61,6 +140,9 @@ def inspect_raw(df: pd.DataFrame, db_name: str, output_dir: Path) -> pd.DataFram
     csv_path = output_dir / f"{db_name.lower()}_raw_inspection.csv"
     stats_df.to_csv(csv_path, index=False)
     print(f"    Saved: {csv_path.name}")
+
+    # Frequency tables + histograms
+    generate_frequency_tables(df, db_name, output_dir, stage="raw")
 
     # Create missing heatmap
     fig, axes = plt.subplots(1, 2, figsize=(14, 8))
@@ -151,6 +233,9 @@ def inspect_imputed(df: pd.DataFrame, db_name: str, output_dir: Path,
     csv_path = output_dir / f"{db_name.lower()}_imputed_inspection.csv"
     stats_df.to_csv(csv_path, index=False)
     print(f"    Saved: {csv_path.name}")
+
+    # Frequency tables + histograms
+    generate_frequency_tables(df, db_name, output_dir, stage="imputed")
 
     # Create comparison plot if raw stats available
     if raw_stats is not None:

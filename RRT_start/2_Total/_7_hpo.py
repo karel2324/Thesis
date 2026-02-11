@@ -14,7 +14,7 @@ from d3rlpy.ope import DiscreteFQE, FQEConfig
 from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluator, DiscreteActionMatchEvaluator
 from d3rlpy.models.encoders import VectorEncoderFactory
 from utils import load_mdp, episodes_to_mdp
-from rl_utils import function_fqe, bootstrap_fqe, compute_metrics_vs_behaviour_policy, compute_mc_return
+from rl_utils import function_fqe, bootstrap_fqe, compute_metrics_vs_behaviour_policy, compute_mc_return, uncertainty_fqe
 from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
 def main():
@@ -481,7 +481,7 @@ def run_hpo_for_db(db_paths: dict, config: dict):
         return all_results
     
     # Use compare_performance_algorithm
-    all_fqe, summary_df = compare_performance_algorithms(all_results, val_ds, config, device, seed, db_key)
+    all_fqe, summary_df = compare_performance_algorithms(all_results, val_ds, train_ds, config, device, seed, db_key)
 
     # Add metadata to FQE results
     summary_df = add_metadata_to_df(summary_df, metadata)
@@ -521,12 +521,13 @@ def run_hpo_for_db(db_paths: dict, config: dict):
 
 ############################################################################################################
 # FUNCTION FOR PERFORMANCE COMPARANCE BETWEEN ALGORTIHMS WITH FQE AND POSSIBLY BOOTSTRAP
-def compare_performance_algorithms(all_results: dict, val_ds, config: dict, device: str, seed: int, db_key: str):
+def compare_performance_algorithms(all_results: dict, val_ds, train_ds, config: dict, device: str, seed: int, db_key: str):
     """FQE evaluation for all models, bootstrap CI for top N."""
 
     # 1. RETRIEVE ALL CONFIGURATIONS
     ## For FQE
-    n_steps_cfg = config['hpo']['fqe']['n_steps']
+    n_steps_per_epoch_cfg = config['hpo']['fqe']['n_steps_per_epoch']
+    n_epochs_cfg = config['hpo']['fqe']['n_epochs']
     learning_rate_cfg = config['hpo']['fqe']['learning_rate']
     gamma_cfg = config['hpo'][f'training_{db_key}']['gamma']
 
@@ -559,9 +560,11 @@ def compare_performance_algorithms(all_results: dict, val_ds, config: dict, devi
         for i, r in enumerate(results):
 
             fqe_isv = function_fqe(algo=r['model'], 
-                                   dataset = val_ds, 
+                                   dataset_train = train_ds,
+                                   dataset_val = val_ds, 
                                    fqe_config = fqe_config, 
-                                   n_steps= n_steps_cfg, 
+                                   n_steps_per_epoch= n_steps_per_epoch_cfg, 
+                                   n_epochs = n_epochs_cfg,
                                    device = device, 
                                    seed = seed) 
             
@@ -579,9 +582,10 @@ def compare_performance_algorithms(all_results: dict, val_ds, config: dict, devi
         print(f"\n--- Bootstrap TOP {fqe_bootstrap_top} ({n_bootstrap_cfg}x) ---")
 
         for i, r in enumerate(all_fqe[:fqe_bootstrap_top]):
-            _, r['ci_low'], r['ci_high'] = bootstrap_fqe(
+            r['fqe_isv_mean'], r['ci_low'], r['ci_high'] = uncertainty_fqe(
                         algo=r['model'], # Use bootstrap function
-                        dataset=val_ds, 
+                        dataset_train=train_ds,
+                        dataset_val=val_ds, 
                         fqe_config=fqe_config, 
                         n_bootstrap = n_bootstrap_cfg, # Times for bootstrapping
                         n_steps = n_steps_bootstrap_cfg, # Total steps 
@@ -589,7 +593,7 @@ def compare_performance_algorithms(all_results: dict, val_ds, config: dict, devi
                         seed=seed, 
                         CI = ci_bootstrap) # Confidence interval
             
-            print(f"  [{i+1}] {r['algorithm'].upper()} | {r['config']}: {r['fqe_isv']:.4f} [{r['ci_low']:.4f}, {r['ci_high']:.4f}]")
+            print(f"  [{i+1}] {r['algorithm'].upper()} | {r['config']}: {r['fqe_isv']:.4f} [{r['fqe_isv_mean']:.4f},{r['ci_low']:.4f}, {r['ci_high']:.4f}]")
 
     # 3. Summary (always create, CI columns will be NaN if bootstrap disabled)
     summary_df = pd.DataFrame([{
@@ -597,6 +601,7 @@ def compare_performance_algorithms(all_results: dict, val_ds, config: dict, devi
         'algorithm': r['algorithm'],
         'config': r['config'],
         'fqe_isv': r['fqe_isv'],
+        'fqe_isv_mean': r.get['fqe_isv_mean', np.nan],
         'fqe_isv_ci_low': r.get('ci_low', np.nan),
         'fqe_isv_ci_high': r.get('ci_high', np.nan),
         'isv_val': r['isv_val'],

@@ -45,7 +45,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
     eval_cfg = config['evaluation']
     print(f"\nEVALUATION CONFIG:")
     print(f"  splits: {eval_cfg['splits']} | MDPs: {eval_cfg['mdps']}")
-    print(f"  FQE: enabled={eval_cfg['fqe']['enabled']}, n_steps={eval_cfg['fqe']['n_steps']}")
+    print(f"  FQE: enabled={eval_cfg['fqe']['enabled']}, n_steps_per_epoch={eval_cfg['fqe']['n_steps_per_epoch']}, n_epochs={eval_cfg['fqe']['n_epochs']}")
     print("=" * 80)
 
     # Setup paths
@@ -66,11 +66,12 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
         print(f"\n--- {mdp_name.upper()} ---")
 
         for split in config['evaluation']['splits']:
-            dataset = load_mdp(db_paths=db_paths, mdp_name=mdp_name, split=split)
+            dataset_val = load_mdp(db_paths=db_paths, mdp_name=mdp_name, split=split)
+            dataset_train = load_mdp(db_paths=db_paths, mdp_name=mdp_name, split='train')
 
             # Monte Carlo return from data (behavior policy)
-            mc_mean, mc_std = compute_mc_return(episodes=dataset.episodes, gamma=gamma)
-            print(f"\n  {split.upper()} ({len(dataset.episodes)} episodes) - MC Return: {mc_mean:.4f} (±{mc_std:.4f})")
+            mc_mean, mc_std = compute_mc_return(episodes=dataset_val.episodes, gamma=gamma)
+            print(f"\n  {split.upper()} ({len(dataset_val.episodes)} episodes) - MC Return: {mc_mean:.4f} (±{mc_std:.4f})")
 
             # Evaluate HPO models (CQL, DDQN, BCQ, NFQ)
             for algo_name in ['cql', 'ddqn', 'bcq', 'nfq']:
@@ -81,20 +82,21 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
                         result = evaluate_algo(
                             algo=model,
                             algo_name=algo_name,
-                            dataset=dataset,
+                            dataset_train=dataset_train,
+                            dataset_val=dataset_val,
                             device=device,
                             seed=seed,
                             mc_mean=mc_mean,
                             mc_std=mc_std,
                             fqe_enabled=config['evaluation']['fqe']['enabled'],
                             fqe_learning_rate=config['evaluation']['fqe']['learning_rate'],
-                            fqe_n_steps=config['evaluation']['fqe']['n_steps'],
+                            fqe_n_steps_per_epoch=config['evaluation']['fqe']['n_steps_per_epoch'],
+                            fqe_n_epochs=config['evaluation']['fqe']['n_epochs'],
                             fqe_bootstrap_enabled=config['evaluation']['fqe']['bootstrap']['enabled'],
                             fqe_bootstrap_n_bootstrap=config['evaluation']['fqe']['bootstrap']['n_bootstrap'],
                             fqe_bootstrap_n_steps=config['evaluation']['fqe']['bootstrap']['n_steps'],
                             fqe_bootstrap_confidence_level=config['evaluation']['fqe']['bootstrap']['confidence_level'],
-                            gamma=gamma
-                        )
+                            gamma=gamma)
                         result['mdp'] = mdp_name
                         result['split'] = split
                         all_results.append(result)
@@ -107,14 +109,16 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
                     result = evaluate_algo(
                         algo=model,
                         algo_name='bc',
-                        dataset=dataset,
+                        dataset_train=dataset_train,
+                        dataset_val=dataset_val,
                         device=device,
                         seed=seed,
                         mc_mean=mc_mean,
                         mc_std=mc_std,
                         fqe_enabled=config['evaluation']['fqe']['enabled'],
                         fqe_learning_rate=config['evaluation']['fqe']['learning_rate'],
-                        fqe_n_steps=config['evaluation']['fqe']['n_steps'],
+                        fqe_n_steps_per_epoch=config['evaluation']['fqe']['n_steps_per_epoch'],
+                        fqe_n_epochs=config['evaluation']['fqe']['n_epochs'],
                         fqe_bootstrap_enabled=config['evaluation']['fqe']['bootstrap']['enabled'],
                         fqe_bootstrap_n_bootstrap=config['evaluation']['fqe']['bootstrap']['n_bootstrap'],
                         fqe_bootstrap_n_steps=config['evaluation']['fqe']['bootstrap']['n_steps'],
@@ -222,7 +226,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
     # Save run configuration JSON
     eval_config = {
         'fqe_enabled': config['evaluation']['fqe']['enabled'],
-        'fqe_n_steps': config['evaluation']['fqe']['n_steps'],
+        'fqe_n_steps': (config['evaluation']['fqe']['n_steps_per_epoch'])*(config['evaluation']['fqe']['n_epochs']),
         'fqe_learning_rate': config['evaluation']['fqe']['learning_rate'],
         'splits': config['evaluation']['splits'],
         'mdps': config['evaluation']['mdps'],

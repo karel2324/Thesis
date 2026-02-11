@@ -56,7 +56,7 @@ def run_external_validation(config: dict, all_paths: dict):
     print(f"\nVALIDATION CONFIG:")
     print(f"  Source: {source_db.upper()} | Target: {target_db.upper()}")
     print(f"  splits: {ext_cfg['splits']} | MDPs: {ext_cfg['mdps']}")
-    print(f"  FQE: enabled={ext_cfg['fqe']['enabled']}, n_steps={ext_cfg['fqe']['n_steps']}")
+    print(f"  FQE: enabled={ext_cfg['fqe']['enabled']}, n_steps_per_epoch={ext_cfg['fqe']['n_steps_per_epoch']}, n_epochs={ext_cfg['fqe']['n_epochs']}")
 
     # Settings
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -87,11 +87,12 @@ def run_external_validation(config: dict, all_paths: dict):
 
         for split in ext_cfg['splits']:
             # Load TARGET dataset (this is the key difference from _9_evaluation)
-            dataset = load_mdp(db_paths=target_paths, mdp_name=mdp_name, split=split)
+            dataset_val = load_mdp(db_paths=target_paths, mdp_name=mdp_name, split=split)
+            dataset_train = load_mdp(db_paths=source_paths, mdp_name=mdp_name, split=config['external_validation']['split_source'])
 
             # Monte Carlo return from target data
-            mc_mean, mc_std = compute_mc_return(episodes=dataset.episodes, gamma=gamma)
-            print(f"\n  {split.upper()} ({len(dataset.episodes)} episodes) - MC Return: {mc_mean:.4f} (±{mc_std:.4f})")
+            mc_mean, mc_std = compute_mc_return(episodes=dataset_val.episodes, gamma=gamma)
+            print(f"\n  {split.upper()} ({len(dataset_val.episodes)} episodes) - MC Return: {mc_mean:.4f} (±{mc_std:.4f})")
 
             # Evaluate HPO models (CQL, DDQN, BCQ, NFQ) trained on SOURCE
             for algo_name in ['cql', 'ddqn', 'bcq', 'nfq']:
@@ -106,14 +107,16 @@ def run_external_validation(config: dict, all_paths: dict):
                         result = evaluate_algo(
                             algo=model,
                             algo_name=algo_name,
-                            dataset=dataset,
+                            dataset_val=dataset_val,
+                            dataset_train=dataset_train,
                             device=device,
                             seed=seed,
                             mc_mean=mc_mean,
                             mc_std=mc_std,
                             fqe_enabled=ext_cfg['fqe']['enabled'],
                             fqe_learning_rate=ext_cfg['fqe']['learning_rate'],
-                            fqe_n_steps=ext_cfg['fqe']['n_steps'],
+                            fqe_n_steps_per_epoch=ext_cfg['fqe']['n_steps_per_epoch'],
+                            fqe_n_epochs=ext_cfg['fqe']['n_epochs'],
                             fqe_bootstrap_enabled=ext_cfg['fqe']['bootstrap']['enabled'],
                             fqe_bootstrap_n_bootstrap=ext_cfg['fqe']['bootstrap']['n_bootstrap'],
                             fqe_bootstrap_n_steps=ext_cfg['fqe']['bootstrap']['n_steps'],
@@ -137,14 +140,16 @@ def run_external_validation(config: dict, all_paths: dict):
                     result = evaluate_algo(
                         algo=model,
                         algo_name='bc',
-                        dataset=dataset,
+                        dataset_val=dataset_val,
+                        dataset_train=dataset_train,
                         device=device,
                         seed=seed,
                         mc_mean=mc_mean,
                         mc_std=mc_std,
                         fqe_enabled=ext_cfg['fqe']['enabled'],
                         fqe_learning_rate=ext_cfg['fqe']['learning_rate'],
-                        fqe_n_steps=ext_cfg['fqe']['n_steps'],
+                        fqe_n_steps_per_epoch=ext_cfg['fqe']['n_steps_per_epoch'],
+                        fqe_n_epochs=ext_cfg['fqe']['n_epochs'],
                         fqe_bootstrap_enabled=ext_cfg['fqe']['bootstrap']['enabled'],
                         fqe_bootstrap_n_bootstrap=ext_cfg['fqe']['bootstrap']['n_bootstrap'],
                         fqe_bootstrap_n_steps=ext_cfg['fqe']['bootstrap']['n_steps'],
@@ -200,8 +205,8 @@ def run_external_validation(config: dict, all_paths: dict):
 
             for split in ext_cfg['splits']:
                 # Load TARGET dataset
-                dataset = load_mdp(db_paths=target_paths, mdp_name=mdp_name, split=split)
-                print(f"\n  {split.upper()} ({len(dataset.episodes)} episodes)")
+                dataset_val = load_mdp(db_paths=target_paths, mdp_name=mdp_name, split=split)
+                print(f"\n  {split.upper()} ({len(dataset_val.episodes)} episodes)")
 
                 # Compare each RL algo vs BC
                 for algo_name in ['cql', 'ddqn', 'bcq', 'nfq']:
@@ -217,7 +222,7 @@ def run_external_validation(config: dict, all_paths: dict):
                             metrics = compute_metrics_algo_vs_algo(
                                 algo1=rl_model,
                                 algo2=bc_model,
-                                dataset=dataset
+                                dataset=dataset_val
                             )
                             metrics['algo1'] = algo_name
                             metrics['algo2'] = 'bc'
@@ -266,7 +271,8 @@ def run_external_validation(config: dict, all_paths: dict):
         'source_database': source_db,
         'target_database': target_db,
         'fqe_enabled': ext_cfg['fqe']['enabled'],
-        'fqe_n_steps': ext_cfg['fqe']['n_steps'],
+        'fqe_n_steps_per_epoch': ext_cfg['fqe']['n_steps_per_epoch'],
+        'fqe_n_epochs': ext_cfg['fqe']['n_epochs'],
         'fqe_learning_rate': ext_cfg['fqe']['learning_rate'],
         'splits': ext_cfg['splits'],
         'mdps': ext_cfg['mdps'],
