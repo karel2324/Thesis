@@ -72,8 +72,8 @@ def plot_fqe_comparison(fqe_cql: dict, fqe_bc: dict, mc: dict, mdps: list, outpu
     Create FQE comparison bar chart.
 
     Args:
-        fqe_cql: Dict {mdp: {'mean': float, 'ci_low': float, 'ci_high': float}}
-        fqe_bc: Dict {mdp: {'mean': float, 'ci_low': float, 'ci_high': float}}
+        fqe_cql: Dict {mdp: {'fqe_isv': float, 'ci_low': float, 'ci_high': float}}
+        fqe_bc: Dict {mdp: {'fqe_isv': float, 'ci_low': float, 'ci_high': float}}
         mc: Dict {mdp: {'mean': float, 'std': float}}
         mdps: List of MDP names to plot
         output_dir: Output directory for saving plots
@@ -89,15 +89,15 @@ def plot_fqe_comparison(fqe_cql: dict, fqe_bc: dict, mc: dict, mdps: list, outpu
 
     # Data
     mc_vals = [mc[m]['mean'] for m in valid]
-    cql_vals = [fqe_cql[m]['mean'] for m in valid]
+    cql_vals = [fqe_cql[m]['fqe_isv'] for m in valid]
     cql_err = [
-        [abs(fqe_cql[m]['mean'] - fqe_cql[m].get('ci_low', fqe_cql[m]['mean'])) for m in valid],
-        [abs(fqe_cql[m].get('ci_high', fqe_cql[m]['mean']) - fqe_cql[m]['mean']) for m in valid]
+        [abs(fqe_cql[m]['fqe_isv'] - fqe_cql[m].get('ci_low', fqe_cql[m]['fqe_isv'])) for m in valid],
+        [abs(fqe_cql[m].get('ci_high', fqe_cql[m]['fqe_isv']) - fqe_cql[m]['fqe_isv']) for m in valid]
     ]
-    bc_vals = [fqe_bc[m]['mean'] for m in valid]
+    bc_vals = [fqe_bc[m]['fqe_isv'] for m in valid]
     bc_err = [
-        [abs(fqe_bc[m]['mean'] - fqe_bc[m].get('ci_low', fqe_bc[m]['mean'])) for m in valid],
-        [abs(fqe_bc[m].get('ci_high', fqe_bc[m]['mean']) - fqe_bc[m]['mean']) for m in valid]
+        [abs(fqe_bc[m]['fqe_isv'] - fqe_bc[m].get('ci_low', fqe_bc[m]['fqe_isv'])) for m in valid],
+        [abs(fqe_bc[m].get('ci_high', fqe_bc[m]['fqe_isv']) - fqe_bc[m]['fqe_isv']) for m in valid]
     ]
 
     # Bars
