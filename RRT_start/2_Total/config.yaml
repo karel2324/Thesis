@@ -7,17 +7,21 @@
 # -----------------------------------------------------------------------------
 steps:
   imputation: false           # Clinical + MICE imputation
-  inspection: false           # Variable inspection (raw + post-imputation)
+  inspection: false            # Variable inspection (raw + post-imputation)
   reward_calculation: false   # Terminal + intermediate rewards
-  scaling: false              # StandardScaler for continuous variables
-  mdp_preparation: false      # Create 5 MDP configurations
+  scaling: false             # StandardScaler for continuous variables
+  mdp_preparation: false       # Create 5 MDP configurations
   train_test_split: false      # Split MDPDatasets into train/val/test
-  ablation_study: true       # Train algorithms & compare MDPs
-  hpo: true                   # Hyperparameter optimization
+  ablation_study: true        # Train algorithms & compare MDPs
+  hpo: false                  # Hyperparameter optimization
   hpo_optuna: false
-  behavior_cloning: true     # Train BC baseline model
-  evaluation: true          # Compare HPO best with BC (same database)
-  external_validation: true  # Cross-database validation
+  behavior_cloning: false     # Train BC baseline model
+  evaluation: false          # Compare HPO best with BC (same database)
+  external_validation: false  # Cross-database validation
+  target_trial_emulation: false
+  wis: false                    # Weighted Importance Sampling (off-policy evaluation)
+  kernelshap: false
+  explainability: false
 
 # -----------------------------------------------------------------------------
 # 2. DATABASE SELECTION
@@ -27,12 +31,14 @@ databases:
   mimic: true
 
 # -----------------------------------------------------------------------------
-# 3. DATASET PARAMETERS 28/8/2, 14/8/2, 7/8/2, 14/12/2, TOT HIER GERED --- 7/12/2, 14/8/3, 7/8/3, 14/12/3, 7/12/3
+# 3. DATASET PARAMETERS 28/8/2, 28/12/2, 14/12/2, 14/8/2, 7/12/2, 7/8/2, 28/8/3, 28/12/3, 14/12/3, 14/8/3, (7/12/3, 7/8/3)
+# check: (7/12/3, 7/8/3 14/8/3, 14/12/3,  28/12/3, 28/8/3, 28/8/2, 28/12/2, 14/12/2, 14/8/2,
+# to do:    7/12/2, 7/8/2, 
 # -----------------------------------------------------------------------------
 dataset:
-  obs_days: 28             # 3 / 5 / 7 / 14 / 28
-  grid_step_hours: 2      # 8 / 12 /24
-  inclusion: "kdigo2"     #"kdigo2" / "kdigo3"
+  obs_days: 7             # 3 / 5 / 7 / 14 / 28
+  grid_step_hours: 12      # 8 / 12 /24
+  inclusion: "kdigo3"    # kdigo2 or kdigo3
 
 # -----------------------------------------------------------------------------
 # 4. Reward
@@ -168,13 +174,14 @@ ablation:
       gamma: 0.99
       n_critics: 1
       hidden_units: [256, 256]
+      target_update_interval: 2000
       # Training
-      n_steps: 100000
-      n_steps_per_epoch: 5000
+      n_steps: 50000
+      n_epochs: 20
 
   # Behavior Cloning baseline (always trained for comparison)
   bc_baseline:
-    enabled: true
+    enabled: false
     hyperparameters:
       learning_rate: 0.0001   # 1e-4
       batch_size: 256
@@ -187,6 +194,7 @@ ablation:
     enabled: true
     learning_rate: 0.0000625     # 1e-4
     n_steps: 10000
+    n_epochs: 5
     # Bootstrap CI (following Hao et al. 2022)
     bootstrap:
       enabled: false
@@ -229,30 +237,28 @@ hpo:
 
   # Training settings (shared across algorithms)
   training_aumc:
-    n_steps: 50000
-    n_steps_per_epoch: 5000
     gamma: 0.99
     hidden_units: [256, 256]
 
   training_mimic:
-    n_steps: 50000
-    n_steps_per_epoch: 5000
     gamma: 0.99
     hidden_units: [256, 256]
 
   # Algorithm-specific hyperparameter grids
   algorithm_grids:
     cql:
-      alpha: [ 0.1, 0.5, 1.0, 5.0]
-      learning_rate: [0.001, 0.0003, 0.0001, 0.0000625]
-      n_critics: [1, 2, 3]
+      alpha: [0.1, 0.5, 1.0, 3.0] # [ 0.1, 0.5, 1.0]
+      learning_rate:  0.0000625 # [0.001, 0.0001, 0.0000625, 0.00001]
+      n_critics: [1,2] # [1,2,3]
       batch_size: [32]       # Fixed for CQL
+      n_steps: [1000, 2000, 5000, 10000, 15000]
 
     ddqn:
-      learning_rate: [0.001, 0.0003, 0.0001, 0.0000625]
-      target_update_interval: [1000, 4000, 8000]
-      n_critics: [1, 2, 4]
+      learning_rate: 0.0000625 # [0.001, 0.0001, 0.0000625, 0.00001]
+      target_update_interval: [200, 500, 1500] # [4000, 8000, 12000]
+      n_critics: [1,2] # [1, 2, 4]
       batch_size: [32]       # Fixed for DDQN
+      n_steps: [1000, 2000, 5000, 10000, 15000]
 
     bcq:
       action_flexibility: [0.1, 0.3, 0.5]
@@ -269,16 +275,16 @@ hpo:
   fqe:
     enabled: true
     learning_rate: 0.0000625
-    n_steps_per_epoch: 10000
+    n_steps: 10000
     n_epochs: 5
 
     # Bootstrap FQE for top N models per algorithm
     bootstrap:
-      enabled: true
+      enabled: false
       top_n_per_algorithm: 3    # Bootstrap the top N models per algorithm
       n_bootstrap: 10           # Number of bootstrap samples
       confidence_level: 0.95    # CI level (0.95 = 95% CI)
-      n_steps: 50000
+      n_steps: 10000
 
   # Optuna
   optuna:
@@ -363,7 +369,7 @@ evaluation:
     ddqn: true
     bcq: false
     nfq: false
-    bc: true
+    bc: false
 
   bc:
     train_split: train
@@ -372,7 +378,7 @@ evaluation:
   fqe:
     enabled: true
     learning_rate: 0.0000625
-    n_steps_per_epoch: 10000
+    n_steps: 10000
     n_epochs: 5
     bootstrap:
       enabled: true
@@ -410,7 +416,7 @@ external_validation:
   # Which algorithms to compare (matching evaluation structure)
   algorithms:
     cql: true
-    ddqn: false
+    ddqn: true
     bcq: false
     nfq: false
     bc: true
@@ -425,19 +431,115 @@ external_validation:
   fqe:
     enabled: true
     learning_rate: 0.0000625
-    n_steps_per_epoch: 10000
-    n_epochs: 5
+    n_steps: 30000
+    n_epochs: 10
     bootstrap:
       enabled: true
       n_bootstrap: 10
       confidence_level: 0.95
-      n_steps: 10000
+      n_steps: 30000
 
   # Output settings
   output:
     save_metrics: true
     save_plots: true
 
+# -----------------------------------------------------------------------------
+# TARGET TRIAL EMULATION SETTINGS
+# -----------------------------------------------------------------------------
+# Clone-Censor-Reweight approach (Hernan & Robins, 2016)
+# Each patient is cloned into two arms (RL policy vs BC policy),
+# censored when actual behaviour deviates, reweighted via IPCW.
+
+target_trial_emulation:
+  database: mimic               # Database to run TTE on
+  mdp: mdp1                     # MDP configuration
+
+  # RL algorithms to compare (each gets its own survival curve vs observed data)
+  algorithms:
+    cql: true
+    ddqn: true
+    bcq: false
+    nfq: false
+
+  # Model settings
+  rl_source_database: aumc      # Where RL models were trained
+  rl_model_source: hpo          # 'hpo' or 'ablation'
+
+  # Outcome
+  horizon_days: 90              # Follow-up horizon for survival analysis
+  event: mortality              # Outcome event: 'mortality'
+
+  # IPCW settings
+  ipcw:
+    baseline_vars:              # Variables for numerator model (stabilization)
+      - age_years
+      - gender_encoded
+      - weight_used_kg_person
+    max_iter: 1000              # LogisticRegression max_iter
+    weight_clip_lower: 0.01     # Per-timestep weight clip
+    weight_clip_upper: 40.0     # Per-timestep weight clip
+    cumulative_cap_quantile: 0.995  # Cap cumulative weights at this quantile
+
+  # Bootstrap settings for survival difference CI
+  bootstrap:
+    enabled: false                # Enable/disable bootstrap
+    n_iterations: 500            # Number of bootstrap resamples
+    CI: 0.95                     # Confidence interval level
+    seed: 42                     # Random seed for reproducibility
+
+  output:
+    save_metrics: true
+    save_plots: true
+
+# -----------------------------------------------------------------------------
+# WEIGHTED IMPORTANCE SAMPLING (WIS)
+# -----------------------------------------------------------------------------
+# Off-policy evaluation: estimates expected return of RL policy using
+# data collected under the behaviour policy (clinician decisions).
+# Fits behaviour policy π_b via logistic regression, then computes
+# importance ratios ρ = π_e(a|s) / π_b(a|s) per episode.
+
+wis:
+  databases:
+    aumc: false
+    mimic: true
+
+  mdp: mdp1                        # MDP configuration to use
+  splits: [val, test]               # Which splits to evaluate on
+
+  # RL algorithms to evaluate
+  algorithms:
+    cql: true
+    ddqn: true
+    bcq: false
+    nfq: false
+
+  # Model settings
+  rl_source_database: aumc          # Where RL models were trained
+  rl_model_source: hpo              # 'hpo' or 'ablation'
+
+  # WIS hyperparameters
+  gamma: 0.99                       # Discount factor (must match training gamma)
+  temperature: 1.0                  # Softmax temperature for target policy (lower = more greedy)
+
+  # Bootstrap CI for WIS estimate
+  bootstrap:
+    enabled: true
+    n_iterations: 1000
+    confidence_level: 0.95
+
+  output:
+    save_metrics: true
+    save_plots: true
+
+# -----------------------------------------------------------------------------
+# 12. KERNEL SHAP
+# -----------------------------------------------------------------------------
+kernelshap:
+  n_background: 100              # Background samples for KernelExplainer
+  n_explain: 200                 # Number of observations to explain
+  n_kmeans: 25                   # K-means clusters for background summary
 
 # -----------------------------------------------------------------------------
 # VARIABLES CONFIGURATION
@@ -701,7 +803,7 @@ variables:
     mice_predictor: false  # MICE variables predict each other iteratively
     scale: false
     clip_min: 0.5
-    clip_max: 4  # mmol/L (SQL: calcium)
+    clip_max: 4 
 
   magnesium_last:
     basic_feature: true
@@ -712,7 +814,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 0
-    clip_max: 4  # mmol/L (SQL: magnesium)
+    clip_max: 4 
 
   phosphate_last:
     basic_feature: true
@@ -723,7 +825,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 0
-    clip_max: 6  # mmol/L (SQL: phosphate)
+    clip_max: 6 
 
   anion_gap_last:
     basic_feature: true
@@ -734,7 +836,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 0
-    clip_max: 60  # mmol/L (SQL: anion_gap)
+    clip_max: 60  
 
   # --- Hematology ---
   hemoglobin_last:
@@ -746,7 +848,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 1
-    clip_max: 16  # mmol/L (SQL: hemoglobin)
+    clip_max: 16  
 
   hematocrit_last:
     basic_feature: true
@@ -757,7 +859,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 0.10
-    clip_max: 0.70  # fraction (SQL: hematocrit)
+    clip_max: 0.70 
 
   platelets_last:
     basic_feature: true
@@ -768,7 +870,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 0
-    clip_max: 2000  # 10^9/L (SQL: platelets)
+    clip_max: 2000 
 
   wbc_last:
     basic_feature: true
@@ -779,7 +881,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 0
-    clip_max: 100  # 10^9/L (SQL: wbc)
+    clip_max: 100  
 
   # --- Liver / Inflammation ---
   bilirubin_last: # Too much missing
@@ -791,7 +893,7 @@ variables:
     mice_predictor: false  # MICE variables predict each other iteratively
     scale: false
     clip_min: 0
-    clip_max: 1000  # umol/L (SQL: bilirubin)
+    clip_max: 1000  
 
   albumin_last: # Too much missing
     basic_feature: false
@@ -802,7 +904,7 @@ variables:
     mice_predictor: false  # MICE variables predict each other iteratively
     scale: false
     clip_min: 10
-    clip_max: 60  # g/L (SQL: albumin)
+    clip_max: 60  
 
   crp_last: # Too much missing
     basic_feature: false
@@ -813,7 +915,7 @@ variables:
     mice_predictor: false  # MICE variables predict each other iteratively
     scale: false
     clip_min: 0
-    clip_max: 500  # mg/L (SQL: crp)
+    clip_max: 500  
 
   # --- Vitals ---
   heartrate_last:
@@ -821,11 +923,11 @@ variables:
     time_feature: true
     missing_indicator: true
     inspect: true
-    impute_method: none
+    impute_method: mice
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 10
-    clip_max: 300  # bpm (SQL: heartrate)
+    clip_max: 300 
 
   map_last:
     basic_feature: true
@@ -836,7 +938,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 10
-    clip_max: 250  # mmHg (SQL: map)
+    clip_max: 250 
 
   temperature_last:
     basic_feature: true
@@ -847,7 +949,7 @@ variables:
     mice_predictor: true  # MICE variables predict each other iteratively
     scale: true
     clip_min: 30
-    clip_max: 45  # Celsius (SQL: temperature)
+    clip_max: 45  
 
   # --- Other Labs ---
   glucose_last:

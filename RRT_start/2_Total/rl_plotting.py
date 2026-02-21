@@ -17,7 +17,7 @@ def plot_training_curves(results: dict, mdps: list, output_dir: Path):
 
     Args:
         results: Dict {mdp_name: {'metrics': DataFrame}} with columns:
-                 step, td_train, td_val, isv_val, action_match
+                 step, td_train, td_val, isv_train, isv_val, action_match
         mdps: List of MDP names to plot
         output_dir: Output directory for saving plots
     """
@@ -34,15 +34,16 @@ def plot_training_curves(results: dict, mdps: list, output_dir: Path):
         axes[0, 0].plot(df['step'], df['td_train'], label=f'{name} train', color=c, lw=2)
         axes[0, 0].plot(df['step'], df['td_val'], label=f'{name} val', color=c, lw=2, ls='--', alpha=0.7)
 
-        # ISV
-        axes[0, 1].plot(df['step'], df['isv_val'], label=name, color=c, lw=2)
+        # ISV (train & val)
+        axes[0, 1].plot(df['step'], df['isv_train'], label=f'{name} train', color=c, lw=2)
+        axes[0, 1].plot(df['step'], df['isv_val'], label=f'{name} val', color=c, lw=2, ls='--', alpha=0.7)
 
         # Action Match
         axes[1, 0].plot(df['step'], df['action_match'] * 100, label=name, color=c, lw=2)
 
     # Labels
     axes[0, 0].set(xlabel='Steps', ylabel='TD Error', title='TD Error (solid=train, dashed=val)')
-    axes[0, 1].set(xlabel='Steps', ylabel='Value', title='Initial State Value (Validation)')
+    axes[0, 1].set(xlabel='Steps', ylabel='Value', title='Initial State Value (solid=train, dashed=val)')
     axes[1, 0].set(xlabel='Steps', ylabel='%', title='Action Match with Clinician')
 
     for ax in axes.flat[:3]:

@@ -16,6 +16,8 @@ import gc
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
 from sklearn.ensemble import ExtraTreesRegressor
+from _4_mdp_preparation import get_feature_cols
+from utils import load_config, get_data_paths
 
 def main():
     """Main entry point for imputation."""
@@ -340,8 +342,9 @@ def run_imputation_for_db(db_paths: dict, config: dict):
 
     # Verify no missing values remain in imputed columns
     print(f"\nVerification:")
-    remaining_missing = df[final_cols].isnull().sum().sum() if final_cols else 0
-    print(f"  Remaining missing in MICE cols: {remaining_missing}")
+    base_cols, _, _ = get_feature_cols(df, load_config())
+    remaining_missing = df[base_cols].isnull().sum().sum() 
+    print(f"  Remaining missing in basic cols: {remaining_missing}")
 
     # Save imputed data
     output_path.parent.mkdir(parents=True, exist_ok=True)

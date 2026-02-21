@@ -8,7 +8,7 @@ using FQE policy evaluation and basic metrics.
 import pandas as pd
 import torch
 
-from utils import load_config, get_data_paths, load_mdp, load_model
+from utils import load_config, get_data_paths, load_mdp, load_model, save_config_snapshot
 from rl_utils import evaluate_algo, compute_mc_return, compute_metrics_algo_vs_algo
 from rl_plotting import plot_evaluation_vs_behaviour_policy, plot_evaluation_algo_vs_bc
 from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
@@ -19,12 +19,19 @@ def main():
     config = load_config()
     all_paths = get_data_paths(config)
 
-    for db_key in ['aumc', 'mimic']:
-        if config['evaluation']['databases'][db_key]:
-            if all_paths[db_key]['mdp_dir'].exists():
-                run_evaluation_for_db(db_paths=all_paths[db_key], config=config)
-            else:
-                print(f"Skipping {db_key}: MDP directory not found")
+    if config['evaluation']['databases']['aumc']==True:
+        print("AUMCdb is enabled for evaluation")
+        if all_paths['aumc']['mdp_dir'].exists():
+            run_evaluation_for_db(db_paths=all_paths['aumc'], config=config)
+        else:
+            print(f"Skipping AUMCdb: MDP directory not found")
+
+    if config['evaluation']['databases']['mimic']==True:
+        print("MIMIC is enabled for evaluation")
+        if all_paths['mimic']['mdp_dir'].exists():
+            run_evaluation_for_db(db_paths=all_paths['mimic'], config=config)
+        else:
+            print(f"Skipping MIMIC: MDP directory not found")
 
 
 def run_evaluation_for_db(db_paths: dict, config: dict):
@@ -45,7 +52,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
     eval_cfg = config['evaluation']
     print(f"\nEVALUATION CONFIG:")
     print(f"  splits: {eval_cfg['splits']} | MDPs: {eval_cfg['mdps']}")
-    print(f"  FQE: enabled={eval_cfg['fqe']['enabled']}, n_steps_per_epoch={eval_cfg['fqe']['n_steps_per_epoch']}, n_epochs={eval_cfg['fqe']['n_epochs']}")
+    print(f"  FQE: enabled={eval_cfg['fqe']['enabled']}, n_steps={eval_cfg['fqe']['n_steps']}, n_epochs={eval_cfg['fqe']['n_epochs']}")
     print("=" * 80)
 
     # Setup paths
@@ -53,6 +60,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
     bc_dir = db_paths['reward_dir'] / "BC_results"
     output_dir = db_paths['reward_dir'] / "Evaluation_results"
     output_dir.mkdir(parents=True, exist_ok=True)
+    save_config_snapshot(output_dir)
 
     # Settings
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -90,7 +98,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
                             mc_std=mc_std,
                             fqe_enabled=config['evaluation']['fqe']['enabled'],
                             fqe_learning_rate=config['evaluation']['fqe']['learning_rate'],
-                            fqe_n_steps_per_epoch=config['evaluation']['fqe']['n_steps_per_epoch'],
+                            fqe_n_steps=config['evaluation']['fqe']['n_steps'],
                             fqe_n_epochs=config['evaluation']['fqe']['n_epochs'],
                             fqe_bootstrap_enabled=config['evaluation']['fqe']['bootstrap']['enabled'],
                             fqe_bootstrap_n_bootstrap=config['evaluation']['fqe']['bootstrap']['n_bootstrap'],
@@ -117,7 +125,7 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
                         mc_std=mc_std,
                         fqe_enabled=config['evaluation']['fqe']['enabled'],
                         fqe_learning_rate=config['evaluation']['fqe']['learning_rate'],
-                        fqe_n_steps_per_epoch=config['evaluation']['fqe']['n_steps_per_epoch'],
+                        fqe_n_steps=config['evaluation']['fqe']['n_steps'],
                         fqe_n_epochs=config['evaluation']['fqe']['n_epochs'],
                         fqe_bootstrap_enabled=config['evaluation']['fqe']['bootstrap']['enabled'],
                         fqe_bootstrap_n_bootstrap=config['evaluation']['fqe']['bootstrap']['n_bootstrap'],
@@ -226,7 +234,8 @@ def run_evaluation_for_db(db_paths: dict, config: dict):
     # Save run configuration JSON
     eval_config = {
         'fqe_enabled': config['evaluation']['fqe']['enabled'],
-        'fqe_n_steps': (config['evaluation']['fqe']['n_steps_per_epoch'])*(config['evaluation']['fqe']['n_epochs']),
+        'fqe_n_steps': config['evaluation']['fqe']['n_steps'],
+        'fqe_n_epochs': config['evaluation']['fqe']['n_epochs'],
         'fqe_learning_rate': config['evaluation']['fqe']['learning_rate'],
         'splits': config['evaluation']['splits'],
         'mdps': config['evaluation']['mdps'],

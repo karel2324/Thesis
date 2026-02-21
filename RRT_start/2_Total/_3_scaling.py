@@ -148,7 +148,7 @@ def run_scaling_for_db(db_paths: dict, config: dict, scaler_info: dict = None):
     # 1. If there is no database scaled before:
     if scaler_info is None:
         # Fit new scaler
-        scaler = StandardScaler() if method == 'standard' else NameError(f"Unknown scaling method: {method}")
+        scaler = StandardScaler()
         df[columns_to_scale] = scaler.fit_transform(df[columns_to_scale])
         print(f"Fit + transformed {len(columns_to_scale)} columns ({method})")
         print(f"To check the scaling is equal: scaler means: {scaler.mean_[:5]}")

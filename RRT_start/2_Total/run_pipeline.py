@@ -18,6 +18,10 @@ from _7_hpo_optuna import main as hpo_optuna
 from _8_behavior_cloning import main as behavior_cloning 
 from _9_evaluation import main as evaluation
 from _10_external_validation import main as external_validation
+from _11_target_trial_emulation import main as target_trial_emulation
+from _12_KernelShap import main as kernelshap
+from _13_Explainability import main as explainability
+from _14_WIS import main as wis
 
 
 def main():
@@ -64,6 +68,10 @@ def main():
         ('behavior_cloning', 'Step 8: Behavior Cloning'),
         ('evaluation', 'Step 9: Evaluation'),
         ('external_validation', 'Step 10: External Validation'),
+        ('target_trial_emulation', 'Step 11: Target Trial Emulation'),
+        ('kernelshap', 'Step 12: KernelSHAP'),
+        ('explainability', 'Step 13: Explainability'),
+        ('wis', 'Step 14: Weighted Importance Sampling'),
     ]
 
     for key, name in step_names:
@@ -105,7 +113,7 @@ def main():
     print("\n" + "=" * 60)
     print("MDP CONSTRUCTION PHASE")
     print("=" * 60)
-
+ 
     if config['steps']['mdp_preparation']:
         print("\nStep 4: MDP Preparation...")
         print("Building MDPDatasets for each configuration...")
@@ -159,6 +167,26 @@ def main():
         print("\nStep 10: External Validation...")
         print("Testing models on external database...")
         external_validation()
+
+    if config['steps']['target_trial_emulation']:
+        print("\nStep 11: Target Trial Emulation...")
+        print("Clone-Censor-Reweight survival analysis (RL vs BC)...")
+        target_trial_emulation()
+
+    if config['steps']['kernelshap']:
+        print("\nStep 12: KernelSHAP...")
+        print("Computing SHAP feature importance for action advantage...")
+        kernelshap()
+
+    if config['steps']['explainability']:
+        print("\nStep 13: Explainability...")
+        print("Timing and state comparison at RRT initiation...")
+        explainability()
+
+    if config['steps']['wis']:
+        print("\nStep 14: Weighted Importance Sampling...")
+        print("Off-policy evaluation with importance ratios...")
+        wis()
 
     # =========================================================================
     # DONE

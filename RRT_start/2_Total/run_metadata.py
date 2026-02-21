@@ -11,26 +11,7 @@ import platform
 import hashlib
 import json
 from pathlib import Path
-
-# Lazy imports to avoid circular dependencies
-_torch = None
-_d3rlpy = None
-
-
-def _get_torch():
-    global _torch
-    if _torch is None:
-        import torch
-        _torch = torch
-    return _torch
-
-
-def _get_d3rlpy():
-    global _d3rlpy
-    if _d3rlpy is None:
-        import d3rlpy
-        _d3rlpy = d3rlpy
-    return _d3rlpy
+import torch
 
 
 def get_git_commit() -> str:
@@ -58,14 +39,9 @@ def get_git_branch() -> str:
 
 
 def get_environment_info() -> dict:
-    """Get environment information (Python, libraries, device)."""
-    torch = _get_torch()
-    d3rlpy = _get_d3rlpy()
-
+    """Get environment information (Python, device)."""
     env_info = {
         'python_version': platform.python_version(),
-        'd3rlpy_version': d3rlpy.__version__,
-        'torch_version': torch.__version__,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
     }
 
@@ -213,7 +189,7 @@ def print_run_header(metadata: dict, title: str = "RUN"):
     if env['device'] == 'cuda' and 'gpu_name' in env:
         device_str = f"cuda ({env['gpu_name']})"
     print(f"Device: {device_str}")
-    print(f"d3rlpy: {env['d3rlpy_version']} | PyTorch: {env['torch_version']} | Python: {env['python_version']}")
+    print(f"Python: {env['python_version']}")
 
     # Dataset
     print(f"\nDATASET:")

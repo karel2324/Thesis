@@ -13,7 +13,7 @@ from d3rlpy.algos import DiscreteCQLConfig, DoubleDQNConfig, DiscreteBCQConfig, 
 from d3rlpy.ope import DiscreteFQE, FQEConfig
 from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluator, DiscreteActionMatchEvaluator
 from d3rlpy.models.encoders import VectorEncoderFactory
-from utils import load_mdp, episodes_to_mdp
+from utils import load_mdp, episodes_to_mdp, save_config_snapshot
 from rl_utils import function_fqe, bootstrap_fqe, compute_metrics_vs_behaviour_policy, compute_mc_return, uncertainty_fqe
 from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
@@ -48,7 +48,7 @@ def run_hpo_for_db(db_paths: dict, config: dict):
 
     # 1. RETRIEVE ALL CONFIGURATIONS
     ## Derive db_key from db_paths['name'] (e.g., "AUMCdb" -> "aumc", "MIMIC" -> "mimic")
-    db_name = db_paths['name']
+    db_name = db_paths['name'] 
     db_key = 'aumc' if 'aumc' in db_name.lower() else 'mimic'
 
     ## Generate run metadata for traceability
@@ -61,15 +61,12 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     ## Training settings (different per dataset)
     gamma_cfg = training_cfg['gamma']
     hidden_units_cfg = training_cfg['hidden_units']
-    n_steps_cfg = training_cfg['n_steps']
-    n_per_epoch_cfg = training_cfg['n_steps_per_epoch']
 
     ## Seed
     seed = config['processing']['random_state']
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
     print(f"\nTRAINING CONFIG:")
-    print(f"  n_steps: {n_steps_cfg} | n_steps_per_epoch: {n_per_epoch_cfg}")
     print(f"  gamma: {gamma_cfg} | hidden_units: {hidden_units_cfg}")
     print("=" * 80)
 
@@ -77,6 +74,7 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     ## Output
     output_dir = db_paths['reward_dir'] / "HPO_results"
     output_dir.mkdir(parents=True, exist_ok=True)
+    save_config_snapshot(output_dir)
 
     ## Load data
     mdp_name = config['hpo']['mdp']
@@ -93,7 +91,9 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     # 3. START TRAINING
     ## Evaluators
     evaluators = {
+        'td_train': TDErrorEvaluator(episodes=train_ds.episodes),
         'td_val': TDErrorEvaluator(episodes=val_ds.episodes),
+        'isv_train': InitialStateValueEstimationEvaluator(episodes=train_ds.episodes),
         'isv_val': InitialStateValueEstimationEvaluator(episodes=val_ds.episodes),
         'action_match': DiscreteActionMatchEvaluator(episodes=val_ds.episodes),
     }
@@ -147,7 +147,7 @@ def run_hpo_for_db(db_paths: dict, config: dict):
                     learning_rate=hp.get('learning_rate'),
                     batch_size=hp.get('batch_size'),
                     n_critics=hp.get('n_critics'),
-
+                    target_update_interval=hp.get('n_steps')//10,
                     # Chosen parameters in start of function
                     gamma=gamma_cfg,
                     encoder_factory=VectorEncoderFactory(hidden_units=hidden_units_cfg)
@@ -155,8 +155,8 @@ def run_hpo_for_db(db_paths: dict, config: dict):
 
                 # Fit CQL algorithm on training dataset
                 cql_hpo.fit(train_ds, 
-                        n_steps=n_steps_cfg, # Chosen parameter in start of function
-                        n_steps_per_epoch=n_per_epoch_cfg, # Chosen parameter in start of function
+                        n_steps=hp.get('n_steps'), 
+                        n_steps_per_epoch=hp.get('n_steps')//20,
                         evaluators=evaluators, # Chosen at start of function
                         show_progress=True, 
                         experiment_name=f"cql_{name}")
@@ -226,7 +226,7 @@ def run_hpo_for_db(db_paths: dict, config: dict):
                 # Set configuration of a DDQN algorithm with a combination of HPs
                 ddqn_hpo=DoubleDQNConfig(
                     # Hyperparameters to be tuned
-                    target_update_interval=hp.get('target_update_interval'),
+                    target_update_interval=hp.get('n_steps')//10,
                     learning_rate=hp.get('learning_rate'),
                     batch_size=hp.get('batch_size'),
                     n_critics=hp.get('n_critics'),
@@ -238,8 +238,8 @@ def run_hpo_for_db(db_paths: dict, config: dict):
 
                 # Fit DDQN algorithm on training dataset
                 ddqn_hpo.fit(train_ds, 
-                        n_steps=n_steps_cfg, # Chosen parameter in start of function
-                        n_steps_per_epoch=n_per_epoch_cfg, # Chosen parameter in start of function
+                        n_steps=hp.get('n_steps'), 
+                        n_steps_per_epoch=hp.get('n_steps')//10,
                         evaluators=evaluators, 
                         show_progress=True, 
                         experiment_name=f"ddqn_{name}")
@@ -448,8 +448,6 @@ def run_hpo_for_db(db_paths: dict, config: dict):
 
     # Store training config for traceability
     training_config = {
-        'n_steps': n_steps_cfg,
-        'n_steps_per_epoch': n_per_epoch_cfg,
         'gamma': gamma_cfg,
         'hidden_units': hidden_units_cfg,
     }
@@ -463,7 +461,6 @@ def run_hpo_for_db(db_paths: dict, config: dict):
         df = pd.DataFrame([{k: v for k, v in r.items() if k != 'model'} for r in results])
 
         # Add training config columns
-        df['n_steps_train'] = n_steps_cfg
         df['gamma'] = gamma_cfg
         df['hidden_units'] = str(hidden_units_cfg)
 
@@ -507,6 +504,7 @@ def run_hpo_for_db(db_paths: dict, config: dict):
     # Save run configuration JSON for full traceability
     fqe_config = {
         'fqe_n_steps': config['hpo']['fqe']['n_steps'],
+        'fqe_n_epochs': config['hpo']['fqe']['n_epochs'],
         'fqe_learning_rate': config['hpo']['fqe']['learning_rate'],
     }
     save_run_config(output_dir, metadata, training_config=training_config, eval_config=fqe_config)
@@ -526,7 +524,7 @@ def compare_performance_algorithms(all_results: dict, val_ds, train_ds, config: 
 
     # 1. RETRIEVE ALL CONFIGURATIONS
     ## For FQE
-    n_steps_per_epoch_cfg = config['hpo']['fqe']['n_steps_per_epoch']
+    n_steps_cfg = config['hpo']['fqe']['n_steps']
     n_epochs_cfg = config['hpo']['fqe']['n_epochs']
     learning_rate_cfg = config['hpo']['fqe']['learning_rate']
     gamma_cfg = config['hpo'][f'training_{db_key}']['gamma']
@@ -563,7 +561,7 @@ def compare_performance_algorithms(all_results: dict, val_ds, train_ds, config: 
                                    dataset_train = train_ds,
                                    dataset_val = val_ds, 
                                    fqe_config = fqe_config, 
-                                   n_steps_per_epoch= n_steps_per_epoch_cfg, 
+                                   n_steps= n_steps_cfg, 
                                    n_epochs = n_epochs_cfg,
                                    device = device, 
                                    seed = seed) 

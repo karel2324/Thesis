@@ -9,13 +9,10 @@ import pandas as pd
 import joblib
 import torch
 import d3rlpy
-from d3rlpy.algos import DiscreteCQLConfig, DiscreteBCConfig
 from d3rlpy.ope import FQEConfig
-from d3rlpy.metrics import TDErrorEvaluator, InitialStateValueEstimationEvaluator, DiscreteActionMatchEvaluator
-from d3rlpy.models.encoders import VectorEncoderFactory
 
-from utils import load_mdp
-from rl_utils import compute_mc_return, bootstrap_fqe, train_cql, train_bc, function_fqe, uncertainty_fqe
+from utils import load_mdp, save_config_snapshot
+from rl_utils import compute_mc_return, train_cql, train_bc, function_fqe, uncertainty_fqe, compute_metrics_vs_behaviour_policy
 from rl_plotting import plot_training_curves, plot_fqe_comparison
 from run_metadata import get_run_metadata, print_run_header, save_run_config, add_metadata_to_df
 
@@ -49,6 +46,7 @@ def run_ablation_for_db(db_paths: dict, config: dict):
     # OUTPUT
     output_dir = db_paths['reward_dir'] / "Ablation_results"
     output_dir.mkdir(parents=True, exist_ok=True)
+    save_config_snapshot(output_dir)
 
     # INPUT
     mdp_dir = db_paths['mdp_dir']
@@ -71,220 +69,185 @@ def run_ablation_for_db(db_paths: dict, config: dict):
     print("=" * 80)
 
     # =========================================================================
-    # 1. LOAD DATASETS
+    # MAIN LOOP: per MDP — load, train CQL, train BC, MC, FQE
     # =========================================================================
-    print("\n--- Loading datasets ---")
-    mdps_to_run = ablation_cfg['mdps_to_run'] # Which mdps to run
+    mdps_to_run = ablation_cfg['mdps_to_run']
+    gamma = algo_cfg['gamma']
+    all_results = {}
 
-    # Initialize datasets and MDP_configurations
-    DATASETS, MDP_CONFIGS = {}, {}
+    for name_mdp in mdps_to_run:
 
-    # Loop over the mdp's which should be evaluated
-    for name in mdps_to_run:
-        # Check
-        if not (mdp_dir / f"{name}_train.h5").exists():
-            print(f"  {name}: SKIPPED (not found)")
+        # --- Check if MDP exists ---
+        if not (mdp_dir / f"{name_mdp}_train.h5").exists():
+            print(f"\n  {name_mdp}: SKIPPED (not found)")
             continue
 
-        # Load different dataset
-        DATASETS[name] = {
-            'train': load_mdp(db_paths, name, 'train'),
-            'val': load_mdp(db_paths, name, 'val'),
-            'test': load_mdp(db_paths, name, 'test'),
+        print(f"\n{'='*60}")
+        print(f"  MDP: {name_mdp.upper()}")
+        print(f"{'='*60}")
+
+        # --- Load datasets & config ---
+        datasets = {
+            'train': load_mdp(db_paths, name_mdp, 'train'),
+            'val': load_mdp(db_paths, name_mdp, 'val'),
+            'test': load_mdp(db_paths, name_mdp, 'test'),
         }
+        mdp_config = joblib.load(mdp_dir / f"{name_mdp}_config.joblib")
+        print(f"  {mdp_config['n_states']} features, {len(datasets['train'].episodes)} episodes")
 
-        # Load the configuration
-        MDP_CONFIGS[name] = joblib.load(mdp_dir / f"{name}_config.joblib")
+        result = {'n_features': mdp_config['n_states']}
 
-        # End check 
-        print(f"  {name}: {MDP_CONFIGS[name]['n_states']} features, {len(DATASETS[name]['train'].episodes)} episodes")
-
-    # =========================================================================
-    # 2. TRAIN CQL
-    # =========================================================================
-    RESULTS, CQL_MODELS = {}, {}
-
-    print(f"\n--- Training CQL ---")
-
-    # Loop over MDPs to run, and find the right database (train/val/test)
-    for name_mdp, datasets in DATASETS.items():
-
+        # --- Train CQL ---
+        print(f"\n  Training CQL...")
         d3rlpy.seed(seed)
 
-        print(f"\n{name_mdp.upper()}:")
-
         cql, metrics, _ = train_cql(
-                train_ds = datasets['train'],
-                val_ds = datasets['val'],
-                alpha = config['ablation']['algorithm']['hyperparameters']['alpha'],
-                learning_rate = config['ablation']['algorithm']['hyperparameters']['learning_rate'],
-                batch_size  = config['ablation']['algorithm']['hyperparameters']['batch_size'],
-                gamma  = config['ablation']['algorithm']['hyperparameters']['gamma'],
-                n_critics  = config['ablation']['algorithm']['hyperparameters']['n_critics'],
-                hidden_units  = config['ablation']['algorithm']['hyperparameters']['hidden_units'],
-                n_steps  = config['ablation']['algorithm']['hyperparameters']['n_steps'],
-                n_steps_per_epoch  = config['ablation']['algorithm']['hyperparameters']['n_steps_per_epoch'],
-                device = device,
-                save_interval  = 10, # At which epochs to save the algorithm
-                name = name_mdp)
+            train_ds=datasets['train'],
+            val_ds=datasets['val'],
+            alpha=algo_cfg['alpha'],
+            learning_rate=algo_cfg['learning_rate'],
+            batch_size=algo_cfg['batch_size'],
+            gamma=gamma,
+            n_critics=algo_cfg['n_critics'],
+            hidden_units=algo_cfg['hidden_units'],
+            n_steps=algo_cfg['n_steps'],
+            n_epochs=algo_cfg['n_epochs'],
+            target_update_interval=algo_cfg['target_update_interval'],
+            device=device,
+            save_interval=5,
+            name=name_mdp)
 
-        CQL_MODELS[name_mdp] = cql
-        RESULTS[name_mdp] = {'metrics': metrics}
-        # Add metadata to metrics CSV
+        metrics_bp = compute_metrics_vs_behaviour_policy(cql, datasets['val'])
+        for k, v in metrics_bp.items():
+            print(f"    {k}: {v:.3f}")
+
+        result['metrics'] = metrics
+        result['cql_model'] = cql
+
         metrics_with_meta = add_metadata_to_df(metrics.copy(), metadata)
         metrics_with_meta.to_csv(output_dir / f"{name_mdp}_metrics.csv", index=False)
         cql.save(str(output_dir / f"{name_mdp}_cql.d3"))
 
-    # =========================================================================
-    # 3. TRAIN BC (baseline)
-    # =========================================================================
-    
-    # Initialize the behavior cloning models (as baseline compare)
-    BC_MODELS = {}
-
-    # Only run if enabled
-    if config['ablation']['bc_baseline']['enabled']:
-        print(f"\n--- Training BC (baseline) ---")
-        for name, datasets in DATASETS.items():
-
+        # --- Train BC (baseline) ---
+        result['bc_model'] = None
+        if config['ablation']['bc_baseline']['enabled']:
+            print(f"\n  Training BC (baseline)...")
             d3rlpy.seed(seed)
+            bc_hp = config['ablation']['bc_baseline']['hyperparameters']
 
-            print(f"\n{name.upper()}:")
+            bc, _, _ = train_bc(
+                train_ds=datasets['train'],
+                val_ds=datasets['val'],
+                learning_rate=bc_hp['learning_rate'],
+                batch_size=bc_hp['batch_size'],
+                beta=bc_hp['beta'],
+                hidden_units=bc_hp['hidden_units'],
+                n_steps=bc_hp['n_steps'],
+                n_steps_per_epoch=bc_hp['n_steps'],
+                device=device,
+                name=name_mdp)
 
-            bc, metrics, _ = train_bc(train_ds = datasets['train'],
-                                       val_ds = datasets['val'],
-                                       learning_rate = config['ablation']['bc_baseline']['hyperparameters']['learning_rate'],
-                                       batch_size = config['ablation']['bc_baseline']['hyperparameters']['batch_size'],
-                                       beta = config['ablation']['bc_baseline']['hyperparameters']['beta'],
-                                       hidden_units = config['ablation']['bc_baseline']['hyperparameters']['hidden_units'],
-                                       n_steps = config['ablation']['bc_baseline']['hyperparameters']['n_steps'],
-                                       n_steps_per_epoch = config['ablation']['bc_baseline']['hyperparameters']['n_steps'],
-                                       device = device,
-                                       name = name)
+            result['bc_model'] = bc
+            bc.save(str(output_dir / f"{name_mdp}_bc.d3"))
 
-            BC_MODELS[name] = bc
-            bc.save(str(output_dir / f"{name}_bc.d3"))
+        # --- Monte Carlo Returns ---
+        mc_mean, mc_std = compute_mc_return(episodes=datasets['val'].episodes, gamma=gamma)
+        result['mc_mean'] = mc_mean
+        result['mc_std'] = mc_std
+        print(f"\n  MC Return: {mc_mean:.4f} +/- {mc_std:.4f}")
 
-    # =========================================================================
-    # 4. MONTE CARLO RETURNS
-    # =========================================================================
-    print(f"\n--- Monte Carlo Returns ---")
-    MC = {}
-    for name, datasets in DATASETS.items():
+        # --- FQE ---
+        result['fqe_cql'] = {}
+        result['fqe_bc'] = {}
 
-        mean, std = compute_mc_return(
-            episodes = datasets['val'].episodes,
-            gamma = config['ablation']['algorithm']['hyperparameters']['gamma']
-        )
-        MC[name] = {'mean': mean, 'std': std}
-        print(f"  {name}: {mean:.4f} +/- {std:.4f}")
+        if config['ablation']['fqe']['enabled']:
+            fqe_cfg = FQEConfig(
+                learning_rate=config['ablation']['fqe']['learning_rate'],
+                gamma=gamma)
 
-    # =========================================================================
-    # 5. FQE WITH BOOTSTRAP
-    # =========================================================================
-
-    FQE_CQL, FQE_BC = {}, {}
-
-    if config['ablation']['fqe']['enabled']:
-        print("Running FQE")
-
-        # Set up configuration for FQE
-        fqe_config = FQEConfig(
-            learning_rate=config['ablation']['fqe']['learning_rate'],
-            gamma=config['ablation']['algorithm']['hyperparameters']['gamma'])
-        
-        # FOR CONSERVATIVE Q-LEARNING
-        # Loop over different CQL-models, just normal FQE
-        for name in CQL_MODELS:
+            # FQE for CQL
             fqe_isv = function_fqe(
-                algo = CQL_MODELS[name],
-                dataset_train = DATASETS[name]['train'],
-                dataset_val = DATASETS[name]['val'],
-                fqe_config = fqe_config,
-                n_steps_per_epoch = config['ablation']['fqe']['n_steps']//10,
-                n_epochs= 10,
-                seed = seed,
-                device = device)
-            FQE_CQL[name] = {'fqe_isv': fqe_isv}
-            print(f"  {name}: {fqe_isv:.4f}")
-        
-        # Only if you want to bootstrap
-        if config['ablation']['fqe']['bootstrap']['enabled']:
-            n_bootstrap = config['ablation']['fqe']['bootstrap']['n_bootstrap']
-            print(f"\n--- FQE (CQL) with {n_bootstrap}x bootstrap ---")
+                algo=cql,
+                dataset_train=datasets['train'],
+                dataset_val=datasets['val'],
+                fqe_config=fqe_cfg,
+                n_steps=config['ablation']['fqe']['n_steps'],
+                n_epochs=config['ablation']['fqe']['n_epochs'],
+                seed=seed,
+                device=device)
+            result['fqe_cql'] = {'fqe_isv': fqe_isv}
+            print(f"  FQE (CQL): {fqe_isv:.4f}")
 
-            for name in CQL_MODELS:
+            if config['ablation']['fqe']['bootstrap']['enabled']:
                 m_isv, ci_lo, ci_hi = uncertainty_fqe(
-                    algo=CQL_MODELS[name],
-                    dataset_train = DATASETS[name]['train'],
-                    dataset_val = DATASETS[name]['val'],
-                    fqe_config=fqe_config,
+                    algo=cql,
+                    dataset_train=datasets['train'],
+                    dataset_val=datasets['val'],
+                    fqe_config=fqe_cfg,
                     n_bootstrap=config['ablation']['fqe']['bootstrap']['n_bootstrap'],
                     n_steps=config['ablation']['fqe']['bootstrap']['n_steps'],
                     device=device,
                     seed=seed,
-                    CI=config['ablation']['fqe']['bootstrap']['confidence_level']
-                )
+                    CI=config['ablation']['fqe']['bootstrap']['confidence_level'])
+                result['fqe_cql'].update({'mean_isv': m_isv, 'ci_low': ci_lo, 'ci_high': ci_hi})
+                print(f"  FQE (CQL) bootstrap: {m_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
 
-                FQE_CQL[name].update({'mean_isv': m_isv, 'ci_low': ci_lo, 'ci_high': ci_hi})
-                print(f"  {name}: {fqe_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
+            # FQE for BC
+            if result['bc_model'] is not None:
+                fqe_isv_bc = function_fqe(
+                    algo=result['bc_model'],
+                    dataset_train=datasets['train'],
+                    dataset_val=datasets['val'],
+                    fqe_config=fqe_cfg,
+                    n_steps=config['ablation']['fqe']['n_steps'],
+                    n_epochs=config['ablation']['fqe']['n_epochs'],
+                    seed=seed,
+                    device=device)
+                result['fqe_bc'] = {'fqe_isv': fqe_isv_bc}
+                print(f"  FQE (BC): {fqe_isv_bc:.4f}")
 
-        # FOR BEHAVIOR CLONING (BASELINE COMPARE)
-        if BC_MODELS:
-            print("FQE for behavior cloning (baseline)")
-
-            # Loop over different BC-models, just normal FQE
-            for name in BC_MODELS:
-                fqe_isv = function_fqe(
-                    algo = BC_MODELS[name],
-                    dataset_train = DATASETS[name]['train'],
-                    dataset_val = DATASETS[name]['val'],
-                    fqe_config = fqe_config,
-                    n_steps_per_epoch = config['ablation']['fqe']['n_steps']//10,
-                    n_epochs= 10,
-                    seed = seed,
-                    device = device)
-                FQE_BC[name] = {'fqe_isv': fqe_isv}
-                print(f"  {name}: {fqe_isv:.4f}")
-            
-            # Only if you want to bootstrap
-            if config['ablation']['fqe']['bootstrap']['enabled']:
-                n_bootstrap = config['ablation']['fqe']['bootstrap']['n_bootstrap']
-                print(f"\n--- FQE (BC) with {n_bootstrap}x bootstrap ---")
-
-                for name in BC_MODELS:
+                if config['ablation']['fqe']['bootstrap']['enabled']:
                     m_isv, ci_lo, ci_hi = uncertainty_fqe(
-                        algo=BC_MODELS[name],
-                        dataset_train = DATASETS[name]['train'],
-                        dataset_val = DATASETS[name]['val'],
-                        fqe_config=fqe_config,
+                        algo=result['bc_model'],
+                        dataset_train=datasets['train'],
+                        dataset_val=datasets['val'],
+                        fqe_config=fqe_cfg,
                         n_bootstrap=config['ablation']['fqe']['bootstrap']['n_bootstrap'],
                         n_steps=config['ablation']['fqe']['bootstrap']['n_steps'],
                         device=device,
                         seed=seed,
-                        CI=config['ablation']['fqe']['bootstrap']['confidence_level']
-                    )
+                        CI=config['ablation']['fqe']['bootstrap']['confidence_level'])
+                    result['fqe_bc'].update({'mean_isv': m_isv, 'ci_low': ci_lo, 'ci_high': ci_hi})
+                    print(f"  FQE (BC) bootstrap: {m_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
 
-                    FQE_BC[name].update({'mean_isv': m_isv, 'ci_low': ci_lo, 'ci_high': ci_hi})
-                    print(f"  {name}: {fqe_isv:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]")
+        all_results[name_mdp] = result
+
     # =========================================================================
-    # 6. PLOTS & SUMMARY
+    # PLOTS & SUMMARY
     # =========================================================================
+    mdp_names = list(all_results.keys())
+
     print("\n--- Creating plots ---")
-    plot_training_curves(RESULTS, list(DATASETS.keys()), output_dir)
-    if FQE_CQL and FQE_BC:
-        plot_fqe_comparison(FQE_CQL, FQE_BC, MC, list(DATASETS.keys()), output_dir)
+    plot_training_curves(all_results, mdp_names, output_dir)
+
+    fqe_cql = {n: r['fqe_cql'] for n, r in all_results.items() if r['fqe_cql']}
+    fqe_bc = {n: r['fqe_bc'] for n, r in all_results.items() if r['fqe_bc']}
+    mc = {n: {'mean': r['mc_mean'], 'std': r['mc_std']} for n, r in all_results.items()}
+
+    if fqe_cql and fqe_bc:
+        plot_fqe_comparison(fqe_cql, fqe_bc, mc, mdp_names, output_dir)
 
     summary = [{
         'MDP': name,
-        'n_features': MDP_CONFIGS[name]['n_states'],
-        'TD_val_final': RESULTS[name]['metrics']['td_val'].iloc[-1],
-        'ISV_peak': RESULTS[name]['metrics']['isv_val'].max(),
-        'Action_match': RESULTS[name]['metrics']['action_match'].iloc[-1],
-        'MC_return': MC[name]['mean'],
-        'FQE_CQL': FQE_CQL.get(name, {}).get('fqe_isv', np.nan),
-        'FQE_BC': FQE_BC.get(name, {}).get('fqe_isv', np.nan),
-    } for name in DATASETS]
+        'n_features': r['n_features'],
+        'TD_val_final': r['metrics']['td_val'].iloc[-1],
+        'ISV_end': r['metrics']['isv_val'].iloc[-1],
+        'ISV_peak': r['metrics']['isv_val'].max(),
+        'Action_match': r['metrics']['action_match'].iloc[-1],
+        'MC_return': r['mc_mean'],
+        'FQE_CQL': r['fqe_cql'].get('fqe_isv', np.nan),
+        'FQE_BC': r['fqe_bc'].get('fqe_isv', np.nan),
+    } for name, r in all_results.items()]
 
     summary_df = pd.DataFrame(summary)
     print(f"\n{summary_df.to_string(index=False)}")

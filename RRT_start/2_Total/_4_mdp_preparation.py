@@ -76,7 +76,7 @@ def build_mdp(df, state_cols, reward_col, mdp_cfg, terminal_only=False):
     sort_cols = mdp_cfg['episode_id_cols'] + [mdp_cfg['time_col']]
     df = df.sort_values(sort_cols).reset_index(drop=True)
 
-    obs = np.nan_to_num(df[state_cols].values, nan=0.0).astype(np.float32)
+    obs = df[state_cols].values.astype(np.float32)
     acts = df[mdp_cfg['action_col']].values.astype(np.int32)
     terms = df[mdp_cfg['terminal_col']].values.astype(bool)
     rews = df[reward_col].values.astype(np.float32)

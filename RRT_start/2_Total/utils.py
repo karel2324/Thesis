@@ -5,6 +5,7 @@ Supports both local (Windows) and Google Colab environments.
 """
 
 import os
+import shutil
 import yaml
 import numpy as np
 from pathlib import Path
@@ -58,6 +59,12 @@ def load_config(config_path: str = None) -> dict:
         config = yaml.safe_load(f)
 
     return config
+
+
+def save_config_snapshot(output_dir):
+    """Copy config.yaml to output directory for reproducibility."""
+    config_src = Path(__file__).parent / "config.yaml"
+    shutil.copy2(config_src, Path(output_dir) / "config.yaml")
 
 
 # Based on configuration --> retrieve right datapath
