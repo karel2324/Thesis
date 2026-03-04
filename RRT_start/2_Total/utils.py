@@ -5,10 +5,12 @@ Supports both local (Windows) and Google Colab environments.
 """
 
 import os
+import sys
 import shutil
 import yaml
 import numpy as np
 from pathlib import Path
+from datetime import datetime
 from d3rlpy.dataset import MDPDataset, ReplayBuffer, InfiniteBuffer
 
 
@@ -193,6 +195,37 @@ def episodes_to_mdp(episodes) -> MDPDataset:
     rews = np.concatenate([e.rewards for e in episodes])
     terms = np.concatenate([[False] * (len(e) - 1) + [True] for e in episodes])
     return MDPDataset(observations=obs, actions=acts, rewards=rews, terminals=terms)
+
+class TeeLogger:
+    """Schrijft stdout naar zowel terminal als logbestand."""
+    def __init__(self, filepath):
+        self.terminal = sys.stdout
+        self.log = open(filepath, 'w', encoding='utf-8')
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+    def close(self):
+        self.log.close()
+        sys.stdout = self.terminal
+
+
+def start_logging(output_dir, name="run"):
+    """Start logging naar bestand + console. Roep .close() aan als je klaar bent."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_path = output_dir / f"{name}_{timestamp}.log"
+    logger = TeeLogger(log_path)
+    sys.stdout = logger
+    return logger
+
 
 if __name__ == "__main__":
     # Test the utilities

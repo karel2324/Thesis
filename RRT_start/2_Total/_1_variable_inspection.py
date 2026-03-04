@@ -15,6 +15,17 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+
+def convert_decimal_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert BigQuery NUMERIC/decimal columns to float64 for inspection."""
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            converted = pd.to_numeric(df[col], errors='coerce')
+            if converted.notna().any():
+                df[col] = converted
+    return df
+
+
 def generate_frequency_tables(df: pd.DataFrame, db_name: str, output_dir: Path,
                               stage: str = "raw", n_bins: int = 30):
     """Generate frequency tables (CSV) and histograms (PNG) for all numeric columns."""
@@ -325,6 +336,7 @@ def run_inspection_for_db(db_paths: dict, config: dict, inspect_raw_data: bool =
         print(f"\nLoading raw data: {db_paths['raw_path']}")
         table = pq.read_table(db_paths['raw_path'])
         df_raw = table.to_pandas(ignore_metadata=True)
+        df_raw = convert_decimal_columns(df_raw)
         print(f"Shape: {df_raw.shape}")
 
         raw_stats = inspect_raw(df_raw, db_name, output_dir)
@@ -336,6 +348,7 @@ def run_inspection_for_db(db_paths: dict, config: dict, inspect_raw_data: bool =
     if inspect_imputed_data and db_paths['imputed_path'].exists():
         print(f"\nLoading imputed data: {db_paths['imputed_path']}")
         df_imp = pd.read_parquet(db_paths['imputed_path'])
+        df_imp = convert_decimal_columns(df_imp)
         print(f"Shape: {df_imp.shape}")
 
         inspect_imputed(df_imp, db_name, output_dir, raw_stats)

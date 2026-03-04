@@ -40,7 +40,22 @@ creat_cids AS (
   FROM cfg
   CROSS JOIN UNNEST(cfg.var_defs) v
   CROSS JOIN UNNEST(v.aumcdb_ids) cid
-  WHERE v.var = 'creat'
+  WHERE v.var = 'creat'ff
+),
+
+/* CKD patienten met vroegste diagnosedatum */
+ckd_descendants AS (
+  SELECT descendant_concept_id
+  FROM `amsterdamumcdb.version1_5_0.concept_ancestor`
+  WHERE ancestor_concept_id = 46271022
+),
+ckd_earliest AS (
+  SELECT
+    person_id,
+    MIN(COALESCE(condition_start_datetime, TIMESTAMP(condition_start_date))) AS ckd_onset_dt
+  FROM `amsterdamumcdb.version1_5_0.condition_occurrence`
+  WHERE condition_concept_id IN (SELECT descendant_concept_id FROM ckd_descendants)
+  GROUP BY person_id
 ),
 
 creat_raw AS (
@@ -65,12 +80,47 @@ creat_win AS (
       ORDER BY ts_s
       RANGE BETWEEN 172800 PRECEDING AND 1 PRECEDING
     ) AS min_creat_48h,
-    MIN(creat_umol) OVER (
+    -- All-time minimum creatinine vóór dit tijdstip (>= min_clin)
+    MIN(CASE WHEN creat_umol >= (SELECT v.min_clin
+          FROM cfg, UNNEST(cfg.var_defs) v WHERE v.var = 'creat')
+        THEN creat_umol END) OVER (
       PARTITION BY person_id, visit_occurrence_id
       ORDER BY ts_s
-      RANGE BETWEEN 604800 PRECEDING AND 1 PRECEDING
-    ) AS min_creat_7d
+      RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    ) AS min_creat_alltime
   FROM creat_raw
+),
+
+/* Baseline creatinine: all-time min, of MDRD back-calc (eGFR=75) als geen CKD */
+creat_win_adj AS (
+  SELECT
+    cw.person_id,
+    cw.visit_occurrence_id,
+    cw.ts,
+    cw.creat_umol,
+    cw.ts_s,
+    cw.min_creat_48h,
+    COALESCE(
+      cw.min_creat_alltime,
+      CASE
+        -- CKD al vastgesteld vóór dit meetmoment: geen baseline aanname
+        WHEN ckd.ckd_onset_dt IS NOT NULL AND ckd.ckd_onset_dt < cw.ts THEN NULL
+        -- Geen CKD: MDRD back-calculation from eGFR=75 (µmol/L)
+        ELSE POWER(
+          (175.0 / 75.0)
+          * POWER(
+              GREATEST(COALESCE(
+                TIMESTAMP_DIFF(cw.ts, TIMESTAMP(d.birth_date), DAY) / 365.25,
+                65.0), 18.0),
+              -0.203)
+          * IF(COALESCE(d.gender, 'M') = 'F', 0.742, 1.0),
+          1.0 / 1.154
+        ) * 88.4
+      END
+    ) AS min_creat_baseline
+  FROM creat_win cw
+  LEFT JOIN ckd_earliest ckd ON ckd.person_id = cw.person_id
+  LEFT JOIN dem d ON d.person_id = cw.person_id
 ),
 
 creat_final_kdigo AS (
@@ -83,8 +133,8 @@ creat_final_kdigo AS (
       WHEN min_creat_48h IS NULL THEN NULL
       ELSE creat_umol - min_creat_48h
     END AS abs_inc_creat_48h,
-    SAFE_DIVIDE(creat_umol, min_creat_7d) AS rel_inc_creat_7d
-  FROM creat_win
+    SAFE_DIVIDE(creat_umol, min_creat_baseline) AS rel_inc_creat_7d
+  FROM creat_win_adj
 ),
 
 /* ===============================================================
@@ -143,9 +193,16 @@ uo_vol_at_event AS (
       ) * r.rate_ml_per_kg_per_h
     ) AS vol_24h_mlkg,
 
-    MIN(IF(r.t_end > TIMESTAMP_SUB(e.ts, INTERVAL 6 HOUR)  AND r.t_start < e.ts, r.t_start, NULL))  AS min_tstart_6h,
-    MIN(IF(r.t_end > TIMESTAMP_SUB(e.ts, INTERVAL 12 HOUR) AND r.t_start < e.ts, r.t_start, NULL)) AS min_tstart_12h,
-    MIN(IF(r.t_end > TIMESTAMP_SUB(e.ts, INTERVAL 24 HOUR) AND r.t_start < e.ts, r.t_start, NULL)) AS min_tstart_24h
+    -- Coverage: total documented hours in each window (MIMIC-style)
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(e.ts, r.t_end), GREATEST(TIMESTAMP_SUB(e.ts, INTERVAL 6 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_6h,
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(e.ts, r.t_end), GREATEST(TIMESTAMP_SUB(e.ts, INTERVAL 12 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_12h,
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(e.ts, r.t_end), GREATEST(TIMESTAMP_SUB(e.ts, INTERVAL 24 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_24h
 
 
   FROM all_events e
@@ -163,23 +220,9 @@ uo_avg_final AS (
     visit_occurrence_id,
     ts,
 
-    CASE
-      WHEN min_tstart_6h IS NOT NULL
-       AND min_tstart_6h <= TIMESTAMP_SUB(ts, INTERVAL 6 HOUR)
-      THEN SAFE_DIVIDE(vol_6h_mlkg, 6.0)
-    END AS avg_uo_6h_ml_per_kg_per_h,
-
-    CASE
-      WHEN min_tstart_12h IS NOT NULL
-       AND min_tstart_12h <= TIMESTAMP_SUB(ts, INTERVAL 12 HOUR)
-      THEN SAFE_DIVIDE(vol_12h_mlkg, 12.0)
-    END AS avg_uo_12h_ml_per_kg_per_h,
-
-    CASE
-      WHEN min_tstart_24h IS NOT NULL
-       AND min_tstart_24h <= TIMESTAMP_SUB(ts, INTERVAL 24 HOUR)
-      THEN SAFE_DIVIDE(vol_24h_mlkg, 24.0)
-    END AS avg_uo_24h_ml_per_kg_per_h
+    CASE WHEN uo_tm_6h  >= 6.0  THEN SAFE_DIVIDE(vol_6h_mlkg,  6.0)  END AS avg_uo_6h_ml_per_kg_per_h,
+    CASE WHEN uo_tm_12h >= 12.0 THEN SAFE_DIVIDE(vol_12h_mlkg, 12.0) END AS avg_uo_12h_ml_per_kg_per_h,
+    CASE WHEN uo_tm_24h >= 24.0 THEN SAFE_DIVIDE(vol_24h_mlkg, 24.0) END AS avg_uo_24h_ml_per_kg_per_h
 
   FROM uo_vol_at_event
 ),
@@ -237,7 +280,7 @@ kdigo1_index AS (
   JOIN visit_times v
     ON v.person_id = f.person_id
    AND v.visit_occurrence_id = f.visit_occurrence_id
-  WHERE f.kdigo1_flag
+  WHERE (f.kdigo1_flag OR f.kdigo2_flag OR f.kdigo3_flag)
     AND v.admit_dt <= f.ts
   GROUP BY f.person_id, f.visit_occurrence_id
 ),
@@ -251,7 +294,7 @@ kdigo2_index AS (
   JOIN visit_times v
     ON v.person_id = f.person_id
    AND v.visit_occurrence_id = f.visit_occurrence_id
-  WHERE f.kdigo2_flag
+  WHERE (f.kdigo2_flag OR f.kdigo3_flag)
     AND v.admit_dt <= f.ts
   GROUP BY f.person_id, f.visit_occurrence_id
 ),
@@ -278,11 +321,12 @@ chosen_index AS (
   SELECT k2.*
   FROM kdigo2_index k2
   JOIN cfg ON cfg.inclusion_default = 'kdigo2'
-    UNION ALL
+  UNION ALL
   SELECT k3.*
   FROM kdigo3_index k3
   JOIN cfg ON cfg.inclusion_default = 'kdigo3'
 ),
+
 
 /* ===============================================================
    5) TERMINAL STATE (death, discharge, bloodflow, window_end)
@@ -322,15 +366,30 @@ terminal AS (
     vt.admit_dt,
     vt.discharge_dt,
     bf.bloodflow_dt,
-    -- CHANGED: Added window_end using cfg.obs_days (7 dagen)
     TIMESTAMP_ADD(ci.t0, INTERVAL cfg.obs_days DAY) AS window_end,
+
     LEAST(
       COALESCE(dth.death_dt,    TIMESTAMP '9999-12-31'),
       COALESCE(vt.discharge_dt, TIMESTAMP '9999-12-31'),
       COALESCE(bf.bloodflow_dt, TIMESTAMP '9999-12-31'),
-      -- CHANGED: Added window_end to terminal calculation
       TIMESTAMP_ADD(ci.t0, INTERVAL cfg.obs_days DAY)
-    ) AS terminal_ts
+    ) AS terminal_ts,
+
+    CASE
+      WHEN bf.bloodflow_dt IS NOT NULL
+           AND bf.bloodflow_dt <= COALESCE(dth.death_dt, TIMESTAMP '9999-12-31')
+           AND bf.bloodflow_dt <= COALESCE(vt.discharge_dt, TIMESTAMP '9999-12-31')
+           AND bf.bloodflow_dt <= TIMESTAMP_ADD(ci.t0, INTERVAL cfg.obs_days DAY)
+      THEN 'rrt_start'
+      WHEN dth.death_dt IS NOT NULL
+           AND dth.death_dt <= COALESCE(vt.discharge_dt, TIMESTAMP '9999-12-31')
+           AND dth.death_dt <= TIMESTAMP_ADD(ci.t0, INTERVAL cfg.obs_days DAY)
+      THEN 'death'
+      WHEN vt.discharge_dt <= TIMESTAMP_ADD(ci.t0, INTERVAL cfg.obs_days DAY)
+      THEN 'discharge'
+      ELSE 'window_end'
+    END AS terminal_event
+
   FROM chosen_index ci
   LEFT JOIN death dth
     ON dth.person_id = ci.person_id
@@ -346,7 +405,15 @@ terminal AS (
 /* ===============================================================
    6) EXCLUSIONS
    =============================================================== */
--- Exclude: ICU stay too short
+prior_bloodflow AS (
+  SELECT DISTINCT bf.person_id, bf.visit_occurrence_id
+  FROM bloodflow_raw bf
+  JOIN chosen_index ci
+    ON ci.person_id = bf.person_id
+   AND ci.visit_occurrence_id = bf.visit_occurrence_id
+  WHERE bf.ts < ci.t0
+),
+
 short_stay AS (
   SELECT v.person_id, v.visit_occurrence_id
   FROM visit_times v
@@ -354,18 +421,16 @@ short_stay AS (
   WHERE TIMESTAMP_DIFF(v.discharge_dt, v.admit_dt, HOUR) < cfg.min_icu_stay_hours
 ),
 
--- Exclude: intoxication (cfg.intox_ids_aumcdb)
-intox_events AS (
-  SELECT
-    c.person_id,
-    c.visit_occurrence_id,
-    COALESCE(c.condition_start_datetime, TIMESTAMP(c.condition_start_date)) AS intox_ts
+intox_stays AS (
+  SELECT DISTINCT c.person_id, c.visit_occurrence_id
   FROM `amsterdamumcdb.version1_5_0.condition_occurrence` c
-  JOIN chosen_index ci
-    ON ci.person_id = c.person_id
-   AND ci.visit_occurrence_id = c.visit_occurrence_id
-  JOIN cfg ON TRUE
+  JOIN terminal t
+    ON t.person_id = c.person_id
+   AND t.visit_occurrence_id = c.visit_occurrence_id
+  CROSS JOIN cfg
   WHERE c.condition_concept_id IN UNNEST(cfg.intox_ids_aumcdb)
+    AND COALESCE(c.condition_start_datetime, TIMESTAMP(c.condition_start_date))
+        < TIMESTAMP_ADD(t.terminal_ts, INTERVAL cfg.intox_fw_hours HOUR)
 )
 
 /* ===============================================================
@@ -378,9 +443,10 @@ SELECT
   t.discharge_dt,
   t.t0,
   t.terminal_ts,
+  t.terminal_event,
   t.death_dt,
   t.bloodflow_dt,
-  t.window_end,  -- NEW: explicit window_end column
+  t.window_end,
 
   dem.gender,
   dem.birth_date,
@@ -388,6 +454,8 @@ SELECT
   wf.weight_kg_first  AS weight_kg_first,
   we.weight_used_kg   AS weight_used_kg,
   we.weight_source    AS weight_source,
+
+  IF(ckd.person_id IS NOT NULL, 1, 0) AS has_ckd,
 
   cfg.inclusion_default AS inclusion_applied
 FROM terminal t
@@ -397,26 +465,14 @@ LEFT JOIN weight_effective we
   ON we.person_id = t.person_id
 LEFT JOIN weight_first wf
   ON wf.person_id = t.person_id
+LEFT JOIN ckd_earliest ckd
+  ON ckd.person_id = t.person_id
 CROSS JOIN cfg
 WHERE t.t0 <= t.terminal_ts
-  AND NOT EXISTS (
-    SELECT 1
-    FROM short_stay ss
-    WHERE ss.person_id = t.person_id
-      AND ss.visit_occurrence_id = t.visit_occurrence_id
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM intox_events e
-    WHERE e.person_id = t.person_id
-      AND e.visit_occurrence_id = t.visit_occurrence_id
-      AND e.intox_ts < TIMESTAMP_ADD(t.terminal_ts, INTERVAL cfg.intox_fw_hours HOUR)
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM bloodflow_raw bf
-    WHERE bf.person_id = t.person_id
-      AND bf.visit_occurrence_id = t.visit_occurrence_id
-      AND bf.ts < t.t0
-  )
+  AND NOT EXISTS (SELECT 1 FROM prior_bloodflow pb
+        WHERE pb.person_id = t.person_id AND pb.visit_occurrence_id = t.visit_occurrence_id)
+  AND NOT EXISTS (SELECT 1 FROM short_stay ss
+        WHERE ss.person_id = t.person_id AND ss.visit_occurrence_id = t.visit_occurrence_id)
+  AND NOT EXISTS (SELECT 1 FROM intox_stays ix
+        WHERE ix.person_id = t.person_id AND ix.visit_occurrence_id = t.visit_occurrence_id)
 ;

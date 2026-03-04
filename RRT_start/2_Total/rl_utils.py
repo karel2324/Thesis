@@ -143,7 +143,7 @@ def bootstrap_fqe(algo, dataset_train, dataset_val, fqe_config, n_bootstrap, n_s
 
     return mean_val, lower_ci, upper_ci
 
-def uncertainty_fqe(algo, dataset_train, dataset_val, fqe_config, n_bootstrap, n_steps, device, seed, CI=0.95):
+def uncertainty_fqe(algo, dataset_train, dataset_val, fqe_config, n_bootstrap, n_steps, n_epochs, device, seed, CI=0.95):
     """
     FQE with bootstrap confidence intervals.
 
@@ -172,8 +172,13 @@ def uncertainty_fqe(algo, dataset_train, dataset_val, fqe_config, n_bootstrap, n
         fqe.fit(
             dataset_train,
             n_steps=n_steps,
-            n_steps_per_epoch=n_steps//10,
-            show_progress=True
+            n_steps_per_epoch=n_steps//n_epochs,
+            show_progress=True,
+            evaluators={
+                'td_train': TDErrorEvaluator(dataset_train.episodes),
+                'td_val': TDErrorEvaluator(dataset_val.episodes),
+                'isv_train': InitialStateValueEstimationEvaluator(dataset_train.episodes),
+                'isv_val': InitialStateValueEstimationEvaluator(dataset_val.episodes)}
             )
 
         # Evaluate
@@ -221,7 +226,7 @@ def compute_metrics_vs_behaviour_policy(algo, dataset):
         Dictionary with all metrics
     """
     obs = np.concatenate([ep.observations for ep in dataset.episodes])
-    actions = np.concatenate([ep.actions for ep in dataset.episodes])
+    actions = np.concatenate([ep.actions for ep in dataset.episodes]).ravel()
     preds = algo.predict(obs)
 
     # Per-state metrics
@@ -346,7 +351,7 @@ def compute_metrics_algo_vs_algo(algo1, algo2, dataset):
 
 
 def evaluate_algo(algo, algo_name, dataset_train, dataset_val, device, seed, mc_mean, mc_std,
-                  fqe_n_steps, fqe_n_epochs,
+                  fqe_n_steps, fqe_n_epochs, fqe_bootstrap_n_epochs,
                   fqe_enabled=True, fqe_learning_rate=0.0001, 
                   fqe_bootstrap_enabled=False, fqe_bootstrap_n_bootstrap=10,
                   fqe_bootstrap_n_steps=10000, fqe_bootstrap_confidence_level=0.95,
@@ -424,6 +429,7 @@ def evaluate_algo(algo, algo_name, dataset_train, dataset_val, device, seed, mc_
                 fqe_config=fqe_config,
                 n_bootstrap=fqe_bootstrap_n_bootstrap,
                 n_steps=fqe_bootstrap_n_steps,
+                n_epochs=fqe_bootstrap_n_epochs,
                 device=device,
                 seed=seed,
                 CI=fqe_bootstrap_confidence_level

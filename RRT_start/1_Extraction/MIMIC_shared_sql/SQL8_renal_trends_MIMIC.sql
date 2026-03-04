@@ -15,6 +15,10 @@ WITH
 /* ===============================================================
    1) GRID (single source of truth)
    =============================================================== */
+cfg AS (
+  SELECT * FROM `windy-forge-475207-e3.${DATASET}.cfg_params` LIMIT 1
+),
+
 grid AS (
   SELECT
     subject_id,
@@ -22,6 +26,29 @@ grid AS (
     stay_id,
     grid_ts
   FROM `windy-forge-475207-e3.${DATASET}.cohort_grid`
+),
+
+dem AS (
+  SELECT * FROM `windy-forge-475207-e3.${DATASET}.demographics`
+),
+
+/* ===============================================================
+   1b) AGE INFO
+   =============================================================== */
+age_info AS (
+  SELECT * FROM `windy-forge-475207-e3.${DATASET}.icu_admission_age`
+),
+
+/* ===============================================================
+   1c) CKD IDENTIFICATION (ICD codes)
+   =============================================================== */
+ckd_stays AS (
+  SELECT DISTINCT ie.stay_id
+  FROM `physionet-data.mimiciv_3_1_icu.icustays` ie
+  JOIN `physionet-data.mimiciv_3_1_hosp.diagnoses_icd` dx
+    ON ie.hadm_id = dx.hadm_id
+  WHERE STARTS_WITH(dx.icd_code, '585')    -- ICD-9 CKD
+     OR STARTS_WITH(dx.icd_code, 'N18')    -- ICD-10 CKD
 ),
 
 /* ===============================================================
@@ -38,7 +65,7 @@ labs AS (
 ),
 
 /* ===============================================================
-   3) MINIMUM WITHIN 48h AND 7d BEFORE GRID
+   3) MINIMUM WITHIN 48h AND ALL-TIME BEFORE GRID
    =============================================================== */
 min_windows AS (
   SELECT
@@ -51,16 +78,47 @@ min_windows AS (
     MIN(IF(l.var = 'creat' AND l.ts > TIMESTAMP_SUB(g.grid_ts, INTERVAL 48 HOUR), l.val, NULL)) AS creat_min_48h,
     MIN(IF(l.var = 'urea'  AND l.ts > TIMESTAMP_SUB(g.grid_ts, INTERVAL 48 HOUR), l.val, NULL)) AS urea_min_48h,
 
-    -- 7d baseline (for KDIGO ratio criteria)
-    MIN(IF(l.var = 'creat', l.val, NULL)) AS creat_min_7d
+    -- All-time minimum creatinine (for KDIGO baseline, >= min_clin)
+    MIN(IF(l.var = 'creat'
+           AND l.val >= (SELECT v.min_clin FROM cfg, UNNEST(cfg.var_defs) v WHERE v.var = 'creat'),
+           l.val, NULL)) AS creat_min_alltime
 
   FROM grid g
   LEFT JOIN labs l
     ON l.stay_id = g.stay_id
-   AND l.ts > TIMESTAMP_SUB(g.grid_ts, INTERVAL 7 DAY)
    AND l.ts <= g.grid_ts
 
   GROUP BY g.subject_id, g.hadm_id, g.stay_id, g.grid_ts
+),
+
+/* ===============================================================
+   3b) BASELINE CREATININE (CKD-aware, MDRD back-calc from eGFR=75)
+       Note: measurements are already in µmol/L, so MDRD * 88.4.
+   =============================================================== */
+creat_baseline AS (
+  SELECT
+    mw.subject_id,
+    mw.hadm_id,
+    mw.stay_id,
+    mw.grid_ts,
+    COALESCE(
+      mw.creat_min_alltime,
+      CASE
+        -- CKD (ICD discharge diagnosis): no baseline assumption
+        WHEN ckd.stay_id IS NOT NULL THEN NULL
+        -- MDRD back-calculation from eGFR=75 (µmol/L)
+        ELSE POWER(
+          (175.0 / 75.0)
+          * POWER(GREATEST(COALESCE(ai.age_at_icu_admission, 65.0), 18.0), -0.203)
+          * IF(COALESCE(d.gender, 'M') = 'F', 0.742, 1.0),
+          1.0 / 1.154
+        ) * 88.4
+      END
+    ) AS creat_min_baseline
+  FROM min_windows mw
+  LEFT JOIN ckd_stays ckd ON ckd.stay_id = mw.stay_id
+  LEFT JOIN dem d ON d.subject_id = mw.subject_id
+  LEFT JOIN age_info ai ON ai.stay_id = mw.stay_id
 ),
 
 /* ===============================================================
@@ -129,10 +187,16 @@ uo_vol_at_grid AS (
       ) * r.rate_ml_per_kg_per_h
     ) AS vol_24h_mlkg,
 
-    -- Check coverage: earliest t_start in each window
-    MIN(IF(r.t_end > TIMESTAMP_SUB(g.grid_ts, INTERVAL 6 HOUR)  AND r.t_start < g.grid_ts, r.t_start, NULL)) AS min_tstart_6h,
-    MIN(IF(r.t_end > TIMESTAMP_SUB(g.grid_ts, INTERVAL 12 HOUR) AND r.t_start < g.grid_ts, r.t_start, NULL)) AS min_tstart_12h,
-    MIN(IF(r.t_end > TIMESTAMP_SUB(g.grid_ts, INTERVAL 24 HOUR) AND r.t_start < g.grid_ts, r.t_start, NULL)) AS min_tstart_24h
+    -- Coverage: total documented hours in each window (MIMIC-style)
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 6 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_6h,
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 12 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_12h,
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 24 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_24h
 
   FROM grid g
   JOIN uo_rates r
@@ -152,23 +216,9 @@ uo_avg AS (
     stay_id,
     grid_ts,
 
-    CASE
-      WHEN min_tstart_6h IS NOT NULL
-       AND min_tstart_6h <= TIMESTAMP_SUB(grid_ts, INTERVAL 6 HOUR)
-      THEN SAFE_DIVIDE(vol_6h_mlkg, 6.0)
-    END AS avg_uo_6h,
-
-    CASE
-      WHEN min_tstart_12h IS NOT NULL
-       AND min_tstart_12h <= TIMESTAMP_SUB(grid_ts, INTERVAL 12 HOUR)
-      THEN SAFE_DIVIDE(vol_12h_mlkg, 12.0)
-    END AS avg_uo_12h,
-
-    CASE
-      WHEN min_tstart_24h IS NOT NULL
-       AND min_tstart_24h <= TIMESTAMP_SUB(grid_ts, INTERVAL 24 HOUR)
-      THEN SAFE_DIVIDE(vol_24h_mlkg, 24.0)
-    END AS avg_uo_24h
+    CASE WHEN uo_tm_6h  >= 6.0  THEN SAFE_DIVIDE(vol_6h_mlkg,  6.0)  END AS avg_uo_6h,
+    CASE WHEN uo_tm_12h >= 12.0 THEN SAFE_DIVIDE(vol_12h_mlkg, 12.0) END AS avg_uo_12h,
+    CASE WHEN uo_tm_24h >= 24.0 THEN SAFE_DIVIDE(vol_24h_mlkg, 24.0) END AS avg_uo_24h
 
   FROM uo_vol_at_grid
 )
@@ -189,7 +239,7 @@ SELECT
   -- minima
   mw.creat_min_48h,
   mw.urea_min_48h,
-  mw.creat_min_7d,
+  cb.creat_min_baseline AS creat_min_7d,
 
   -- absolute increase (48h)
   (lv.creat_last - mw.creat_min_48h) AS creat_abs_inc_48h,
@@ -201,7 +251,7 @@ SELECT
   SAFE_DIVIDE(lv.urea_last,  mw.urea_min_48h)  AS urea_rel_inc_48h,
 
   -- relative increase (7d baseline)
-  SAFE_DIVIDE(lv.creat_last, mw.creat_min_7d) AS creat_rel_inc_7d,
+  SAFE_DIVIDE(lv.creat_last, cb.creat_min_baseline) AS creat_rel_inc_7d,
 
   -- urine output averages (ml/kg/h)
   uo.avg_uo_6h,
@@ -212,19 +262,19 @@ SELECT
   CASE
     -- Stage 3 (highest priority)
     WHEN (lv.creat_last >= 353.6 AND (lv.creat_last - mw.creat_min_48h) >= 26.5)
-      OR SAFE_DIVIDE(lv.creat_last, mw.creat_min_7d) >= 3.0
+      OR SAFE_DIVIDE(lv.creat_last, cb.creat_min_baseline) >= 3.0
       OR uo.avg_uo_24h < 0.3
       OR uo.avg_uo_12h = 0.0
     THEN 3
 
     -- Stage 2
-    WHEN SAFE_DIVIDE(lv.creat_last, mw.creat_min_7d) >= 2.0
+    WHEN SAFE_DIVIDE(lv.creat_last, cb.creat_min_baseline) >= 2.0
       OR uo.avg_uo_12h < 0.5
     THEN 2
 
     -- Stage 1
     WHEN (lv.creat_last - mw.creat_min_48h) >= 26.5
-      OR SAFE_DIVIDE(lv.creat_last, mw.creat_min_7d) >= 1.5
+      OR SAFE_DIVIDE(lv.creat_last, cb.creat_min_baseline) >= 1.5
       OR uo.avg_uo_6h < 0.5
     THEN 1
 
@@ -235,6 +285,8 @@ FROM grid g
 LEFT JOIN last_vals lv
   USING (stay_id, grid_ts)
 LEFT JOIN min_windows mw
+  USING (subject_id, hadm_id, stay_id, grid_ts)
+LEFT JOIN creat_baseline cb
   USING (subject_id, hadm_id, stay_id, grid_ts)
 LEFT JOIN uo_avg uo
   USING (subject_id, hadm_id, stay_id, grid_ts)

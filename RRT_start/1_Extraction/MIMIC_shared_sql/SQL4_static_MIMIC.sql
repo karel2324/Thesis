@@ -33,7 +33,7 @@ SELECT
   c.t0,
   c.terminal_ts,
   c.death_dt,
-  c.crrt_start_dt,
+  c.rrt_start_dt,
   c.icu_intime,
   c.icu_outtime,
 

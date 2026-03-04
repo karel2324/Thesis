@@ -1,110 +1,138 @@
-/* ===============================================================
-   SQL3_grid.sql - MIMIC-IV Time Grid
-
-   Analogue to AUMCdb SQL3_grid.sql
-
-   Creates a time grid from t0 to terminal_ts with configurable step size.
-   Marks terminal steps and RRT actions.
-   =============================================================== */
-
 CREATE OR REPLACE TABLE `windy-forge-475207-e3.${DATASET}.cohort_grid` AS
 WITH
+/* ===============================================================
+   0) CONFIG
+   =============================================================== */
 cfg AS (
-  SELECT * FROM `windy-forge-475207-e3.${DATASET}.cfg_params` LIMIT 1
-),
-
-cohort AS (
-  SELECT * FROM `windy-forge-475207-e3.${DATASET}.cohort_index`
+  SELECT *
+  FROM `windy-forge-475207-e3.${DATASET}.cfg_params`
+  LIMIT 1
 ),
 
 /* ===============================================================
-   1) Generate grid timestamps (t0 to terminal_ts, step = grid_step_hours)
+   1) COHORT BASIS
    =============================================================== */
-max_steps AS (
+cohort AS (
+  SELECT
+    subject_id,
+    hadm_id,
+    stay_id,
+    t0,
+    terminal_ts,
+    death_dt,
+    icu_outtime,
+    rrt_start_dt,
+    window_end
+  FROM `windy-forge-475207-e3.${DATASET}.cohort_index`
+  WHERE t0 IS NOT NULL
+),
+
+/* ===============================================================
+   2) GRID GENERATIE
+   =============================================================== */
+base_grid AS (
   SELECT
     c.subject_id,
     c.hadm_id,
     c.stay_id,
     c.t0,
     c.terminal_ts,
-    c.terminal_event,
-    c.crrt_start_dt,
-    -- Calculate max number of steps needed
-    CAST(CEIL(
-      TIMESTAMP_DIFF(c.terminal_ts, c.t0, HOUR) / cfg.grid_step_hours
-    ) AS INT64) + 1 AS n_steps
+    c.death_dt,
+    c.icu_outtime,
+    c.rrt_start_dt,
+    c.window_end,
+    ts AS grid_ts
   FROM cohort c
   CROSS JOIN cfg
-),
-
--- Generate step numbers (0 to max observed)
-step_numbers AS (
-  SELECT step_num
-  FROM UNNEST(GENERATE_ARRAY(0, 500)) AS step_num  -- max ~167 days at 8h steps
-),
-
-grid_raw AS (
-  SELECT
-    ms.subject_id,
-    ms.hadm_id,
-    ms.stay_id,
-    ms.t0,
-    ms.terminal_ts,
-    ms.terminal_event,
-    ms.crrt_start_dt,
-    sn.step_num,
-    TIMESTAMP_ADD(ms.t0, INTERVAL sn.step_num * cfg.grid_step_hours HOUR) AS grid_ts
-  FROM max_steps ms
-  CROSS JOIN cfg
-  CROSS JOIN step_numbers sn
-  WHERE sn.step_num < ms.n_steps
+  CROSS JOIN UNNEST(
+    GENERATE_TIMESTAMP_ARRAY(
+      c.t0,
+      TIMESTAMP_ADD(c.t0, INTERVAL cfg.obs_days DAY),
+      INTERVAL cfg.grid_step_hours HOUR
+    )
+  ) AS ts
 ),
 
 /* ===============================================================
-   2) Add max grid_ts per stay using window function
+   3) TERMINAL LOGICA OP GRID
    =============================================================== */
-grid_with_max AS (
+grid AS (
   SELECT
-    g.*,
-    MAX(g.grid_ts) OVER (PARTITION BY g.stay_id) AS max_grid_ts_per_stay
-  FROM grid_raw g
+    b.*,
+
+    -- geldig binnen episode
+    (b.terminal_ts IS NOT NULL AND b.grid_ts <= b.terminal_ts) AS included,
+
+    -- laatste geldige grid voor of op terminal
+    MAX(
+      IF(
+        b.terminal_ts IS NOT NULL
+        AND b.grid_ts <= b.terminal_ts,
+        b.grid_ts,
+        NULL
+      )
+    ) OVER (
+      PARTITION BY b.stay_id
+    ) AS last_valid_ts,
+
+    -- expliciete terminal step
+    (
+      b.terminal_ts IS NOT NULL
+      AND b.grid_ts =
+        MAX(
+          IF(
+            b.terminal_ts IS NOT NULL
+            AND b.grid_ts <= b.terminal_ts,
+            b.grid_ts,
+            NULL
+          )
+        ) OVER (PARTITION BY b.stay_id)
+    ) AS is_terminal_step,
+
+    -- type terminal event (only on terminal step)
+    CASE
+      WHEN b.terminal_ts IS NULL THEN NULL
+      -- Only populate on terminal step (grid_ts = last valid grid ts)
+      WHEN b.grid_ts < MAX(IF(b.terminal_ts IS NOT NULL AND b.grid_ts <= b.terminal_ts, b.grid_ts, NULL))
+           OVER (PARTITION BY b.stay_id) THEN NULL
+      WHEN b.terminal_ts = b.death_dt            THEN 'death'
+      WHEN b.terminal_ts = b.icu_outtime         THEN 'discharge'
+      WHEN b.terminal_ts = b.rrt_start_dt        THEN 'rrt_start'
+      WHEN b.terminal_ts = b.window_end          THEN 'window_end'
+      ELSE 'window_end'
+    END AS terminal_event
+
+  FROM base_grid b
 )
 
 /* ===============================================================
-   FINAL: Add terminal flags and action
+   FINAL
    =============================================================== */
 SELECT
-  g.subject_id,
-  g.hadm_id,
-  g.stay_id,
-  g.grid_ts,
-  g.step_num,
-  g.t0, 
+  subject_id,
+  hadm_id,
+  stay_id,
+  t0,
+  grid_ts,
+  terminal_ts,
+  window_end,
+  -- episode flags
+  included,
+  is_terminal_step,
+  terminal_event,
 
-  -- Is this the terminal step?
-  (g.grid_ts = g.max_grid_ts_per_stay) AS is_terminal_step,
+  -- timing helpers
+  TIMESTAMP_DIFF(grid_ts, t0, HOUR) AS hours_since_t0,
+  TIMESTAMP_DIFF(terminal_ts, grid_ts, HOUR) AS hours_to_terminal,
 
-  -- Terminal event (only on terminal step)
+  last_valid_ts,
   CASE
-    WHEN g.grid_ts = g.max_grid_ts_per_stay
-    THEN g.terminal_event
-    ELSE NULL
-  END AS terminal_event,
-
-  -- Action: was RRT started in the NEXT interval?
-  -- action_rrt = 1 if CRRT started between current grid_ts and next grid_ts
-  CASE
-    WHEN g.crrt_start_dt IS NOT NULL
-         AND g.crrt_start_dt >= g.grid_ts
-         AND g.crrt_start_dt < TIMESTAMP_ADD(g.grid_ts, INTERVAL cfg.grid_step_hours HOUR)
+    WHEN is_terminal_step
+     AND terminal_event = 'rrt_start'
     THEN 1
     ELSE 0
-  END AS action_rrt,
+  END AS action_rrt
 
-    -- timing helpers
-  TIMESTAMP_DIFF(g.grid_ts, g.t0, HOUR) AS hours_since_t0,
-
-FROM grid_with_max g
-CROSS JOIN cfg
-ORDER BY g.subject_id, g.stay_id, g.grid_ts
-;
+FROM grid
+WHERE included
+ORDER BY subject_id, stay_id, grid_ts;

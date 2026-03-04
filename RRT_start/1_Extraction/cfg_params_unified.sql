@@ -62,14 +62,14 @@ SELECT
     -- RENAL / METABOLIC
     STRUCT(
       'creat' AS var, 'renal' AS category, 72 AS lb_h,
-      0 AS min_clin, 3000 AS max_clin, 0 AS min_stat, 3000 AS max_stat,
+      10 AS min_clin, 3000 AS max_clin, 0 AS min_stat, 3000 AS max_stat,
       [3020564] AS aumcdb_ids, 'umol/L' AS aumcdb_unit,
       [50912] AS mimic_ids, 'mg/dL' AS mimic_unit,
       88.4 AS conv_factor, 'mimic * 88.4 = aumcdb' AS conv_formula
     ),
     STRUCT(
       'urea', 'renal', 72,
-      0, 300, 0, 300,
+      10, 300, 0, 300,
       [43534077], 'mmol/L',
       [51006], 'mg/dL',
       0.357, 'mimic * 0.357 = aumcdb (BUN to Urea)'

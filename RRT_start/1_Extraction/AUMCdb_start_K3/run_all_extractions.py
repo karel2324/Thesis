@@ -1,11 +1,11 @@
 """
 Run all extraction combinations automatically.
 
-Combinations:
-- Database: MIMIC, AUMCdb (2)
-- OBS days: 3, 5, 7, 14, 28 (5)
-- GRID: 8, 12, 24 (3)
-- INCLUSION: kdigo2, kdigo3 (2)
+UP TO DATE:
+DATABASES = ["AUMCdb", "MIMIC"] 
+OBS_DAYS_LIST = [7, 14, 28]
+GRID_STEP_LIST = [8]
+INCLUSIONS = ["kdigo2", "kdigo3"]
 
 Total: 2 * 5 * 3 * 2 = 60 combinations
 """
@@ -22,9 +22,9 @@ import traceback
 # =============================================================================
 # CONFIGURATION - All combinations to run
 # =============================================================================
-DATABASES = ["MIMIC", "AUMCdb"]
+DATABASES = ["AUMCdb", "MIMIC"] 
 OBS_DAYS_LIST = [7, 14, 28]
-GRID_STEP_LIST = [8, 12]
+GRID_STEP_LIST = [8]
 INCLUSIONS = ["kdigo2", "kdigo3"]
 
 MIN_ICU_HOURS = 24
@@ -32,7 +32,7 @@ OUTPUT_BASE = r"C:\Users\karel\Desktop\data\Thesis\Data"
 PROJECT = "windy-forge-475207-e3"
 
 # Only run specific SQL numbers (e.g., [7, 15]). Empty list = run all.
-SQL_ONLY = [7,8, 15]
+SQL_ONLY = []
 
 # =============================================================================
 # HELPER FUNCTIONS

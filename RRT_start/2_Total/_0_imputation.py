@@ -249,6 +249,31 @@ def apply_mice(df: pd.DataFrame, mice_cols: list, predictors: list, config: dict
     return df, mice, mice_cols, predictors, {}
 
 
+def recalculate_gcs_total(df: pd.DataFrame) -> pd.DataFrame:
+    """Recalculate gcs_total_last from MICE-imputed components."""
+    gcs_clips = {'gcs_eye_last': (1, 4), 'gcs_motor_last': (1, 6), 'gcs_verbal_last': (1, 5)}
+
+    for col, (lo, hi) in gcs_clips.items():
+        if col in df.columns:
+            df[col] = df[col].round().clip(lo, hi).astype(int)
+
+    mask = (df['gcs_eye_last'].notna()
+            & df['gcs_motor_last'].notna()
+            & df['gcs_verbal_last'].notna())
+
+    df.loc[mask, 'gcs_total_last'] = (
+        df.loc[mask, 'gcs_eye_last']
+        + df.loc[mask, 'gcs_motor_last']
+        + df.loc[mask, 'gcs_verbal_last']
+    ).astype(int)
+
+    # Where all 3 components are missing: assume normal (15)
+    df['gcs_total_last'] = df['gcs_total_last'].fillna(15)
+
+    print(f"\n  GCS total recalculated: range [{df['gcs_total_last'].min():.0f}, {df['gcs_total_last'].max():.0f}]")
+    return df
+
+
 def run_imputation_for_db(db_paths: dict, config: dict):
     db_name = db_paths['name']
     random_state = config.get('processing', {}).get('random_state', 42)
@@ -339,6 +364,9 @@ def run_imputation_for_db(db_paths: dict, config: dict):
     df, mice_imputer, final_cols, final_preds, _ = apply_mice(
         df, mice_cols, predictors, config
     )
+
+    # Step 5: Recalculate GCS total from imputed components
+    df = recalculate_gcs_total(df)
 
     # Verify no missing values remain in imputed columns
     print(f"\nVerification:")

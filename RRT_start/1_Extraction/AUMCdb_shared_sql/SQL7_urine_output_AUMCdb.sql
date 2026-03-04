@@ -1,3 +1,11 @@
+/* ===============================================================
+   SQL7_urine_output.sql - AUMCdb Urine Output at Grid
+
+   Integrates UO rates to grid timesteps:
+   - uo_6h_mlkgh, uo_12h_mlkgh, uo_24h_mlkgh, uo_24h_ml
+   Coverage check: only report if documented hours >= window (MIMIC-style)
+   =============================================================== */
+
 CREATE OR REPLACE TABLE `windy-forge-475207-e3.${DATASET}.grid_urine_output` AS
 WITH
 /* ===============================================================
@@ -12,7 +20,7 @@ grid AS (
 ),
 
 /* ===============================================================
-   2) UO RATES (uit SQL2)
+   2) UO RATES (uit SQL1_utils)
    =============================================================== */
 uo_rates AS (
   SELECT
@@ -26,61 +34,50 @@ uo_rates AS (
 ),
 
 /* ===============================================================
-   3) INTEGRATIE NAAR GRID
+   3) RAW VOLUMES + COVERAGE at each grid point
    =============================================================== */
-uo_at_grid AS (
+uo_vol_at_grid AS (
   SELECT
     g.person_id,
     g.visit_occurrence_id,
     g.grid_ts,
 
-    -- ml/kg/h (6h average)
+    -- Raw volumes (ml/kg)
     SUM(
-      GREATEST(
-        0.0,
-        TIMESTAMP_DIFF(
-          LEAST(g.grid_ts, r.t_end),
-          GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 6 HOUR), r.t_start),
-          MINUTE
-        ) / 60.0
+      GREATEST(0.0,
+        TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 6 HOUR), r.t_start), MINUTE) / 60.0
       ) * r.rate_ml_per_kg_per_h
-    ) / 6.0 AS uo_6h_mlkgh,
+    ) AS vol_6h_mlkg,
 
-    -- ml/kg/h (12h average)
     SUM(
-      GREATEST(
-        0.0,
-        TIMESTAMP_DIFF(
-          LEAST(g.grid_ts, r.t_end),
-          GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 12 HOUR), r.t_start),
-          MINUTE
-        ) / 60.0
+      GREATEST(0.0,
+        TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 12 HOUR), r.t_start), MINUTE) / 60.0
       ) * r.rate_ml_per_kg_per_h
-    ) / 12.0 AS uo_12h_mlkgh,
+    ) AS vol_12h_mlkg,
 
-    -- ml/kg/h (24h average)
     SUM(
-      GREATEST(
-        0.0,
-        TIMESTAMP_DIFF(
-          LEAST(g.grid_ts, r.t_end),
-          GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 24 HOUR), r.t_start),
-          MINUTE
-        ) / 60.0
+      GREATEST(0.0,
+        TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 24 HOUR), r.t_start), MINUTE) / 60.0
       ) * r.rate_ml_per_kg_per_h
-    ) / 24.0 AS uo_24h_mlkgh,
+    ) AS vol_24h_mlkg,
 
-    -- absolute ml (24h)
+    -- Raw volume (absolute ml, 24h)
     SUM(
-      GREATEST(
-        0.0,
-        TIMESTAMP_DIFF(
-          LEAST(g.grid_ts, r.t_end),
-          GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 24 HOUR), r.t_start),
-          MINUTE
-        ) / 60.0
+      GREATEST(0.0,
+        TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 24 HOUR), r.t_start), MINUTE) / 60.0
       ) * r.rate_ml_per_h
-    ) AS uo_24h_ml
+    ) AS vol_24h_ml,
+
+    -- Coverage: total documented hours in each window (MIMIC-style)
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 6 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_6h,
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 12 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_12h,
+    SUM(GREATEST(0.0,
+      TIMESTAMP_DIFF(LEAST(g.grid_ts, r.t_end), GREATEST(TIMESTAMP_SUB(g.grid_ts, INTERVAL 24 HOUR), r.t_start), MINUTE) / 60.0
+    )) AS uo_tm_24h
 
   FROM grid g
   LEFT JOIN uo_rates r
@@ -95,6 +92,16 @@ uo_at_grid AS (
     g.grid_ts
 )
 
-SELECT *
-FROM uo_at_grid
+/* ===============================================================
+   4) FINAL: apply coverage check (NULL if insufficient coverage)
+   =============================================================== */
+SELECT
+  person_id,
+  visit_occurrence_id,
+  grid_ts,
+  CASE WHEN uo_tm_6h  >= 6.0  THEN SAFE_DIVIDE(vol_6h_mlkg,  6.0)  END AS uo_6h_mlkgh,
+  CASE WHEN uo_tm_12h >= 12.0 THEN SAFE_DIVIDE(vol_12h_mlkg, 12.0) END AS uo_12h_mlkgh,
+  CASE WHEN uo_tm_24h >= 24.0 THEN SAFE_DIVIDE(vol_24h_mlkg, 24.0) END AS uo_24h_mlkgh,
+  CASE WHEN uo_tm_24h >= 24.0 THEN vol_24h_ml END AS uo_24h_ml
+FROM uo_vol_at_grid
 ORDER BY person_id, visit_occurrence_id, grid_ts;
